@@ -152,14 +152,17 @@ async def estimation_loop():
                                     notifier.notify_if_needed(sym, batch_metrics[sym]["result_obj"], ai_data, price_cache[sym])
                                 
                                 if system_state[sym]["1m"]["score"] >= 50:
-                                    db.save_prediction({
-                                        "symbol": sym,
-                                        "status": system_state[sym]["1m"]["status"],
-                                        "score": system_state[sym]["1m"]["score"],
-                                        "ai_text": ai_data.get("ai_text", ""),
-                                        "predicted_price": ai_data.get("predicted_price", 0),
-                                        "probability": ai_data.get("probability", 0)
-                                    })
+                                    try:
+                                        db.save_prediction({
+                                            "symbol": sym,
+                                            "status": system_state[sym]["1m"]["status"],
+                                            "score": system_state[sym]["1m"]["score"],
+                                            "ai_text": ai_data.get("ai_text", ""),
+                                            "predicted_price": ai_data.get("predicted_price", 0),
+                                            "probability": ai_data.get("probability", 0)
+                                        })
+                                    except Exception as db_e:
+                                        print(f"[Loop] Supabase Save Failed: {db_e}")
                 except Exception as ai_e:
                     print(f"[Loop] AI Step Error: {ai_e}")
                     traceback.print_exc()

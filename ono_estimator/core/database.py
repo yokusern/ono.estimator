@@ -1,4 +1,5 @@
 import os
+import traceback
 from datetime import datetime
 from typing import List, Dict, Any
 from supabase import create_client, Client
@@ -9,37 +10,42 @@ class SupabaseClient:
         key = os.environ.get("SUPABASE_KEY")
         if not url or not key:
             self.client = None
-            print("[Supabase] Configuration missing. Database operations will be skipped.")
+            print("[Supabase] Configuration missing (SUPABASE_URL/SUPABASE_KEY). Skipping persistence.")
             return
         
         try:
             self.client = create_client(url, key)
-            print("[Supabase] Client initialized successfully.")
+            print("[Supabase] Connection Established.")
         except Exception as e:
-            print(f"[Supabase] Init Error: {e}")
+            print(f"[Supabase] Connection Failed: {e}")
             self.client = None
 
     def save_prediction(self, data: Dict[str, Any]):
-        """予測結果を保存"""
+        """予測結果を保存 (データ整合性を強制)"""
         if not self.client:
             return
         
         try:
-            # カラム名をテーブル定義に合わせる
-            # SQL: CREATE TABLE predictions (id uuid DEFAULT uuid_generate_v4() PRIMARY KEY, created_at timestamptz DEFAULT now(), symbol text, status text, score int, ai_text text, predicted_price float, probability int);
+            # データのサニタイズ (Nullや不正な値を防ぐ)
             row = {
-                "symbol": data.get("symbol"),
-                "status": data.get("status"),
-                "score": data.get("score"),
-                "ai_text": data.get("ai_text"),
-                "predicted_price": data.get("predicted_price"),
-                "probability": data.get("probability"),
+                "symbol": str(data.get("symbol", "UNKNOWN")),
+                "status": str(data.get("status", "Wait")),
+                "score": int(data.get("score", 0)),
+                "ai_text": str(data.get("ai_text", "")),
+                "predicted_price": float(data.get("predicted_price", 0.0)) if data.get("predicted_price") else 0.0,
+                "probability": int(data.get("probability", 0)),
                 "created_at": datetime.now().isoformat()
             }
+            
+            # 書き込み実行
             res = self.client.table("predictions").insert(row).execute()
+            print(f"[Supabase] Successfully saved analysis for {row['symbol']}")
             return res
         except Exception as e:
-            print(f"[Supabase] Save Error: {e}")
+            print(f"!!! [Supabase] Insert Error for {data.get('symbol')}: {e}")
+            print(f"[Supabase] Attempted data: {data}")
+            traceback.print_exc()
+            # ループを止めないために例外は飲み込む
             return None
 
     def get_history(self, limit: int = 50) -> List[Dict[str, Any]]:
