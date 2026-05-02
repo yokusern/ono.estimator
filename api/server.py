@@ -100,6 +100,11 @@ def get_prediction():
     """フロントエンドの全銘柄同期用エンドポイント"""
     return {"data": system_state}
 
+@app.get("/health")
+def health_check():
+    """Render等の死活監視用"""
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
 @app.get("/api/history")
 def get_history(limit: int = 50):
     """履歴ログ取得"""
