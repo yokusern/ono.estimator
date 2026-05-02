@@ -88,8 +88,9 @@ async def analyze_symbol(symbol: str):
 
 async def estimation_loop():
     print("[Server] ONO High-Precision Autonomous Engine Started.")
+    import traceback
     
-    # 起動直後に最初の分析を即座に実行 (コールドスタート対策)
+    # 起動直後に最初の分析を即座に実行
     print("[Loop] Initial sync triggered...")
     
     while True:
@@ -122,52 +123,61 @@ async def estimation_loop():
 
             print(f"[Loop] Data fetched for {valid_results_count}/{len(target_symbols)} symbols.")
 
-            # 2. MTF AI分析
+            # 2. MTF AI分析 (データがある場合のみ実行)
             if batch_metrics:
-                ai_results = ai_analyzer.batch_analyze(batch_metrics)
-                if isinstance(ai_results, dict):
-                    market_overview["global_theme"] = ai_results.get("market_intelligence", market_overview["global_theme"])
-                    market_overview["last_update_ts"] = int(time.time())
-                    
-                    for sym in target_symbols:
-                        if sym in ai_results:
-                            ai_data = ai_results[sym]
-                            for tf in TIMEFRAMES:
-                                system_state[sym][tf].update({
-                                    "ai_text": ai_data.get("ai_text", "---"),
-                                    "predicted_price": ai_data.get("predicted_price", 0),
-                                    "probability": ai_data.get("probability", 0),
-                                    "last_updated": datetime.now().isoformat()
-                                })
+                try:
+                    ai_results = ai_analyzer.batch_analyze(batch_metrics)
+                    if isinstance(ai_results, dict):
+                        market_overview["global_theme"] = ai_results.get("market_intelligence", market_overview["global_theme"])
+                        market_overview["last_update_ts"] = int(time.time())
+                        
+                        for sym in target_symbols:
+                            ui_sym = sym.replace("=X", "").replace("-USD", "").replace("^N", "JP").replace("GC=F", "GOLD")
+                            # キーの正規化 (AIが返すキーに合わせる)
+                            matching_key = next((k for k in ai_results.keys() if k in sym or sym in k), None)
                             
-                            # 通知としきい値保存 (80%以上で通知)
-                            if system_state[sym]["1m"]["score"] >= 80:
-                                print(f"[Loop] Signal Alert: {sym} Score {system_state[sym]['1m']['score']}")
-                                notifier.notify_if_needed(sym, batch_metrics[sym]["result_obj"], ai_data, price_cache[sym])
-                                db.save_prediction({
-                                    "symbol": sym,
-                                    "status": system_state[sym]["1m"]["status"],
-                                    "score": system_state[sym]["1m"]["score"],
-                                    "ai_text": ai_data.get("ai_text", ""),
-                                    "predicted_price": ai_data.get("predicted_price", 0),
-                                    "probability": ai_data.get("probability", 0)
-                                })
+                            if matching_key:
+                                ai_data = ai_results[matching_key]
+                                for tf in TIMEFRAMES:
+                                    system_state[sym][tf].update({
+                                        "ai_text": ai_data.get("ai_text", "Intelligence processing..."),
+                                        "predicted_price": ai_data.get("predicted_price", 0),
+                                        "probability": ai_data.get("probability", 0),
+                                        "last_updated": datetime.now().isoformat()
+                                    })
+                                
+                                # 通知としきい値保存 (50%以上で保存、80%以上で通知)
+                                if system_state[sym]["1m"]["score"] >= 80:
+                                    print(f"[Loop] Signal Alert: {sym} Score {system_state[sym]['1m']['score']}")
+                                    notifier.notify_if_needed(sym, batch_metrics[sym]["result_obj"], ai_data, price_cache[sym])
+                                
+                                if system_state[sym]["1m"]["score"] >= 50:
+                                    db.save_prediction({
+                                        "symbol": sym,
+                                        "status": system_state[sym]["1m"]["status"],
+                                        "score": system_state[sym]["1m"]["score"],
+                                        "ai_text": ai_data.get("ai_text", ""),
+                                        "predicted_price": ai_data.get("predicted_price", 0),
+                                        "probability": ai_data.get("probability", 0)
+                                    })
+                except Exception as ai_e:
+                    print(f"[Loop] AI Step Error: {ai_e}")
+                    traceback.print_exc()
 
-            # Render生存戦略: 自身のヘルスチェックを叩く
+            # Render生存戦略
             if os.environ.get("RENDER_EXTERNAL_URL"):
                 try:
-                    import requests
                     requests.get(f"{os.environ['RENDER_EXTERNAL_URL']}/api/health", timeout=5)
-                except:
-                    pass
+                except: pass
 
             elapsed = time.time() - cycle_start
-            sleep_time = max(10, 60 - elapsed) # 最低10秒は待機してAPI負荷を抑制
+            sleep_time = max(10, 60 - elapsed)
             print(f"[Loop] Cycle complete in {elapsed:.1f}s. Next scan in {sleep_time:.1f}s")
             await asyncio.sleep(sleep_time)
             
         except Exception as e:
             print(f"!!! CRITICAL LOOP ERROR: {e}")
+            traceback.print_exc()
             await asyncio.sleep(30)
 
 @app.on_event("startup")
