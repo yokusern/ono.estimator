@@ -11,7 +11,6 @@ class GeminiAnalyzer:
             self.model = None
         else:
             genai.configure(api_key=api_key)
-            # 安定した動作のため最新のgemini-1.5-proなどを指定
             self.model = genai.GenerativeModel('gemini-1.5-flash')
 
     def analyze(self, result: PredictionResult, symbol: str) -> str:
