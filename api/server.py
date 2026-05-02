@@ -7,6 +7,7 @@ from datetime import datetime
 from fastapi import FastAPI, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+import requests
 
 from ono_estimator.core.hybrid_fetcher import HybridDataFetcher
 from ono_estimator.core.ai_analyzer import GeminiAnalyzer
