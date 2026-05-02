@@ -21,16 +21,19 @@ class ONOPredictionEngine:
     def analyze(self, mtf_data: MTFData = None, symbol: str = "USDJPY", funda_info: dict = None, df_precomputed: pd.DataFrame = None) -> PredictionResult:
         result = PredictionResult()
         
-        # mtf_data がなく、計算済みデータがある場合はモック作成（または簡易判定へ移行）
+        # mtf_data がなく、計算済みデータがある場合はモック作成
         if mtf_data is None and df_precomputed is not None:
             # 簡易判定ロジック（df_precomputedを使用）
             latest = df_precomputed.iloc[-1]
+            rsi = latest.get('rsi', 0)
+            macd = latest.get('macd', 0)
+            
             result.win_rate_score = 50 # デフォルト
-            if latest['rsi'] > 50: result.win_rate_score += 10
-            if latest['macd'] > 0: result.win_rate_score += 10
+            if rsi > 50: result.win_rate_score += 10
+            if macd > 0: result.win_rate_score += 10
             result.status = SignalStatus.STANDBY
             result.rationale_a = "【Ultra Engine】一括計算データに基づき分析完了。"
-            result.rationale_b = f"RSI: {latest['rsi']:.1f} / MACD: {latest['macd']:.4f}"
+            result.rationale_b = f"RSI: {rsi:.1f} / MACD: {macd:.4f}"
             return result
 
         if funda_info is None:

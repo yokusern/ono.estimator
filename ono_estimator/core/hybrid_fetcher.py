@@ -117,21 +117,25 @@ class HybridDataFetcher:
         return None
 
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """指標計算の堅牢化 (データ不足時は計算をスキップ)"""
+        """指標計算の堅牢化 (カラムの存在を保証)"""
+        # 必須カラムの初期化 (エラー防止)
+        for col in ['ma25', 'rsi', 'macd', 'signal', 'bb_upper', 'bb_lower']:
+            if col not in df.columns:
+                df[col] = 0.0
+
         if df is None or df.empty or len(df) < 30: 
             return df
             
         try:
             close = df['close']
-            df['ma25'] = close.rolling(25).mean()
-            std = close.rolling(20).std()
+            df['ma25'] = close.rolling(25).mean().fillna(close)
+            std = close.rolling(20).std().fillna(0)
             df['bb_upper'] = df['ma25'] + (std * 2)
             df['bb_lower'] = df['ma25'] - (std * 2)
             
             delta = close.diff()
             gain = (delta.where(delta > 0, 0)).rolling(14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-            # ゼロ除算防止
             rs = gain / loss.replace(0, np.nan)
             df['rsi'] = 100 - (100 / (1 + rs.fillna(0)))
             
@@ -139,6 +143,7 @@ class HybridDataFetcher:
             exp2 = close.ewm(span=26, adjust=False).mean()
             df['macd'] = exp1 - exp2
             df['signal'] = df['macd'].ewm(span=9, adjust=False).mean()
+            
             return df.fillna(0)
         except Exception as e:
             print(f"[Indicators] Calculation error: {e}")
