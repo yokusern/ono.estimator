@@ -147,6 +147,9 @@ export default function Dashboard() {
                 {isConnected ? 'System Live' : 'Connecting'}
               </span>
               <div className="flex items-center gap-2 mt-1">
+                <span className="text-[8px] font-bold text-slate-300 uppercase tracking-widest mr-1">
+                  {marketOverview.last_update_ts ? `Updated ${Math.floor(Date.now()/1000 - marketOverview.last_update_ts)}s ago` : 'Syncing...'}
+                </span>
                 <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-sky-500 shadow-[0_0_10px_#0ea5e9]' : 'bg-red-500'}`} />
               </div>
             </div>
