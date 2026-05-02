@@ -87,18 +87,25 @@ async def analyze_symbol(symbol: str):
         return None
 
 async def estimation_loop():
-    print("[Server] High-Speed MTF Loop Started.")
+    print("[Server] ONO High-Precision Autonomous Engine Started.")
+    
+    # 起動直後に最初の分析を即座に実行 (コールドスタート対策)
+    print("[Loop] Initial sync triggered...")
     
     while True:
-        start_time = time.time()
+        cycle_start = time.time()
         try:
-            # 1. 並列データ取得と計算 (最大速度)
+            print(f"[Loop] Cycle started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            # 1. 並列データ取得
             tasks = [analyze_symbol(sym) for sym in target_symbols]
             results = await asyncio.gather(*tasks)
             
             batch_metrics = {}
+            valid_results_count = 0
             for res in results:
                 if res:
+                    valid_results_count += 1
                     sym = res["symbol"]
                     chart_data[sym] = res["charts"]
                     batch_metrics[sym] = {
@@ -107,12 +114,13 @@ async def estimation_loop():
                         "score": res["mtf"].get("1m", {}).get("score", 0),
                         "result_obj": res["result_obj"]
                     }
-                    # 状態の仮更新
                     for tf in TIMEFRAMES:
                         system_state[sym][tf].update({
                             "status": res["mtf"].get(tf, {}).get("status", "Wait"),
                             "score": res["mtf"].get(tf, {}).get("score", 0)
                         })
+
+            print(f"[Loop] Data fetched for {valid_results_count}/{len(target_symbols)} symbols.")
 
             # 2. MTF AI分析
             if batch_metrics:
@@ -132,8 +140,9 @@ async def estimation_loop():
                                     "last_updated": datetime.now().isoformat()
                                 })
                             
-                            # 通知と保存 (スコアしきい値)
+                            # 通知としきい値保存 (80%以上で通知)
                             if system_state[sym]["1m"]["score"] >= 80:
+                                print(f"[Loop] Signal Alert: {sym} Score {system_state[sym]['1m']['score']}")
                                 notifier.notify_if_needed(sym, batch_metrics[sym]["result_obj"], ai_data, price_cache[sym])
                                 db.save_prediction({
                                     "symbol": sym,
@@ -144,14 +153,21 @@ async def estimation_loop():
                                     "probability": ai_data.get("probability", 0)
                                 })
 
-            elapsed = time.time() - start_time
-            # 60秒周期だが、実行時間を引いて正確な間隔を維持
-            sleep_time = max(1, 60 - elapsed)
-            print(f"[Loop] Cycle Complete in {elapsed:.1f}s. Next scan in {sleep_time:.1f}s")
+            # Render生存戦略: 自身のヘルスチェックを叩く
+            if os.environ.get("RENDER_EXTERNAL_URL"):
+                try:
+                    import requests
+                    requests.get(f"{os.environ['RENDER_EXTERNAL_URL']}/api/health", timeout=5)
+                except:
+                    pass
+
+            elapsed = time.time() - cycle_start
+            sleep_time = max(10, 60 - elapsed) # 最低10秒は待機してAPI負荷を抑制
+            print(f"[Loop] Cycle complete in {elapsed:.1f}s. Next scan in {sleep_time:.1f}s")
             await asyncio.sleep(sleep_time)
             
         except Exception as e:
-            print(f"Critical Loop Error: {e}")
+            print(f"!!! CRITICAL LOOP ERROR: {e}")
             await asyncio.sleep(30)
 
 @app.on_event("startup")
@@ -173,9 +189,19 @@ def get_prediction(tf: str = Query("1m", regex="^(1m|5m|15m|1h|4h)$")):
 
 @app.get("/api/chart/{symbol}")
 def get_chart(symbol: str, tf: str = Query("1m", regex="^(1m|5m|15m|1h|4h)$")):
-    symbol = symbol.replace("/", "")
-    matched_sym = next((s for s in target_symbols if symbol in s), symbol)
-    return {"data": chart_data.get(matched_sym, {}).get(tf, [])}
+    # UIのシンボル名からバックエンドのTickerへ変換
+    mapping = {
+        "USDJPY": "USDJPY=X",
+        "GOLD": "GC=F",
+        "BTC": "BTC-USD",
+        "JP225": "^N225",
+        "XAGUSD": "XAGUSD=X",
+        "AUDJPY": "AUDJPY=X",
+        "EURUSD": "EURUSD=X",
+        "EURJPY": "EURJPY=X"
+    }
+    ticker = mapping.get(symbol, symbol)
+    return {"data": chart_data.get(ticker, {}).get(tf, [])}
 
 @app.get("/api/history")
 def get_history():

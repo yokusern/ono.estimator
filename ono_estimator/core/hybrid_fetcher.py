@@ -41,13 +41,13 @@ class HybridDataFetcher:
         """1分足データを指定の時間足にリサンプリング"""
         if df is None or df.empty: return df
         
-        # 時間枠のマッピング
+        # 時間枠のマッピング (Pandas v2+ 対応)
         tf_map = {
             "1m": "1min",
             "5m": "5min",
             "15m": "15min",
-            "1h": "1H",
-            "4h": "4H"
+            "1h": "1h",
+            "4h": "4h"
         }
         rule = tf_map.get(timeframe, timeframe)
         
