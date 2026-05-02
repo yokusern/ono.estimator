@@ -2,7 +2,9 @@ import asyncio
 import os
 import json
 import time
-from datetime import datetime
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -16,7 +18,7 @@ from ono_estimator.core.market_context import MarketContextFetcher
 
 load_dotenv()
 
-app = FastAPI(title="ONO Estimator Ultimate v2.2", version="2.2.0")
+app = FastAPI(title="ONO Estimator Pro v3.0", version="3.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -25,105 +27,127 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 監視銘柄 (8銘柄)
+# 監視銘柄
 target_symbols = ["USDJPY", "GOLD", "BTC", "JP225", "XAGUSD", "AUDJPY", "EURUSD", "EURJPY"]
 
-# グローバルステートの初期化 (空の状態でもUIが壊れないようにする)
-system_state = {
-    sym: {
-        "status": "Wait",
-        "score": 0,
-        "ai_text": "分析待機中...",
-        "last_updated": datetime.now().isoformat(),
-        "tags": [],
-        "funda": {"theme": "Initializing...", "direction": "NEUTRAL"}
-    } for sym in target_symbols
-}
+# グローバルステート
+system_state = {sym: {"status": "Wait", "score": 0, "ai_text": "Analyzing...", "funda": {}} for sym in target_symbols}
+chart_data = {sym: [] for sym in target_symbols}
+market_overview = {"fear_greed": "50", "global_theme": "Analyzing..."}
 
-# 市場全体の状況（Cross-Asset用）
-market_overview = {
-    "fear_greed": "Loading...",
-    "global_theme": "Analyzing Global Market...",
-    "correlations": []
-}
+def calculate_zigzag(df, deviation=0.5):
+    """簡易ZigZag計算"""
+    closes = df['close'].values
+    zigzag = []
+    # 簡易実装: 高値安値を結ぶ（ここではcloseベース）
+    for i in range(len(closes)):
+        if i == 0 or i == len(closes)-1:
+            zigzag.append({"time": int(df.index[i].timestamp()), "value": float(closes[i])})
+        elif i % 10 == 0: # 10本に1回頂点を作る簡易モック
+            zigzag.append({"time": int(df.index[i].timestamp()), "value": float(closes[i])})
+    return zigzag
+
+def calculate_indicators(df):
+    """テクニカル指標の計算"""
+    # MA
+    df['ma25'] = df['close'].rolling(25).mean()
+    df['ma75'] = df['close'].rolling(75).mean()
+    df['ma200'] = df['close'].rolling(200).mean()
+    
+    # Bollinger Bands (2σ)
+    std = df['close'].rolling(20).std()
+    df['bb_upper'] = df['ma25'] + (std * 2)
+    df['bb_lower'] = df['ma25'] - (std * 2)
+    
+    # RSI
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    rs = gain / loss
+    df['rsi'] = 100 - (100 / (1 + rs))
+    
+    # MACD
+    exp1 = df['close'].ewm(span=12, adjust=False).mean()
+    exp2 = df['close'].ewm(span=26, adjust=False).mean()
+    df['macd'] = exp1 - exp2
+    df['signal'] = df['macd'].ewm(span=9, adjust=False).mean()
+    df['histogram'] = df['macd'] - df['signal']
+    
+    return df.fillna(0)
 
 async def estimation_loop():
-    print("--- ONO Estimator v2.2: Stability & Performance Mode ---")
     connector = YFinanceConnector()
     engine = ONOPredictionEngine()
     ai_analyzer = GeminiAnalyzer()
     funda_analyzer = FundaAnalyzer()
-    notifier = Notifier()
     context_fetcher = MarketContextFetcher()
-    
-    previous_status = {sym: SignalStatus.NONE for sym in target_symbols}
+    notifier = Notifier()
     
     while True:
         try:
-            # 1. 市場全体の共通コンテキスト取得（ループの最初に一度だけ）
-            global_context = context_fetcher.fetch_all("GLOBAL")
-            market_overview["fear_greed"] = global_context.get("fear_greed", "N/A")
-            
+            # マクロ情報の更新
+            global_ctx = context_fetcher.fetch_all("GLOBAL")
+            market_overview["fear_greed"] = global_ctx.get("fear_greed", "50")
+            market_overview["global_theme"] = global_ctx.get("theme", "Range Market")
+
             for symbol in target_symbols:
                 try:
-                    # レート制限回避: 銘柄間にインターバルを置く
-                    await asyncio.sleep(2) 
+                    await asyncio.sleep(3) # レート制限対策
                     
-                    # 2. データ取得 (Yahoo Finance)
+                    # 1. データ取得
                     mtf_data = connector.fetch_mtf_data(symbol)
-                    yf_news = connector.fetch_news(symbol)
+                    if not mtf_data: continue
                     
-                    if mtf_data is None:
-                        print(f"Skipping {symbol}: No data from yfinance.")
-                        continue
-                        
                     df_m5 = mtf_data.get_data("5m")
-                    current_price = df_m5['close'].iloc[-1] if df_m5 is not None else 0.0
+                    if df_m5 is None: continue
                     
-                    # 3. ファンダメンタルズ分析 (Gemini)
-                    # ここでもレート制限を考慮し、ウェイトを置く
-                    await asyncio.sleep(1)
-                    funda_info = funda_analyzer.analyze(symbol, yf_news, global_context)
+                    # 2. チャート指標計算
+                    df_full = calculate_indicators(df_m5)
                     
-                    # 4. テクニカル判定
+                    # フロントエンド用のチャートデータ生成 (最新100件)
+                    records = []
+                    for idx, row in df_full.tail(100).iterrows():
+                        records.append({
+                            "time": int(idx.timestamp()),
+                            "open": float(row['open']),
+                            "high": float(row['high']),
+                            "low": float(row['low']),
+                            "close": float(row['close']),
+                            "ma25": float(row['ma25']),
+                            "ma75": float(row['ma75']),
+                            "bb_upper": float(row['bb_upper']),
+                            "bb_lower": float(row['bb_lower']),
+                            "rsi": float(row['rsi']),
+                            "macd": float(row['macd']),
+                            "signal": float(row['signal']),
+                            "hist": float(row['histogram'])
+                        })
+                    chart_data[symbol] = records
+                    
+                    # 3. 分析実行
+                    await asyncio.sleep(2) # Gemini 429 回避
+                    funda_info = funda_analyzer.analyze(symbol, [], global_ctx)
                     result = engine.analyze(mtf_data, symbol=symbol, funda_info=funda_info)
                     
-                    prev = previous_status[symbol]
-                    curr = result.status
+                    ai_text = ai_analyzer.analyze(result, symbol)
                     
-                    # AI詳細分析の実行要件
-                    should_ai_analyze = (curr != prev) or (curr != SignalStatus.NONE and "分析待機中" in system_state[symbol]["ai_text"])
+                    system_state[symbol] = {
+                        "status": result.status.value,
+                        "score": result.win_rate_score,
+                        "ai_text": ai_text,
+                        "funda": funda_info,
+                        "zigzag": calculate_zigzag(df_full.tail(100)),
+                        "last_updated": datetime.now().isoformat()
+                    }
                     
-                    if should_ai_analyze:
-                        await asyncio.sleep(2) # Geminiの連続リクエストを避ける
-                        ai_text = ai_analyzer.analyze(result, symbol)
-                        
-                        system_state[symbol] = {
-                            "status": curr.value,
-                            "score": result.win_rate_score,
-                            "ai_text": ai_text,
-                            "last_updated": datetime.now().isoformat(),
-                            "tags": result.tags,
-                            "funda": funda_info
-                        }
-                        
-                        notifier.notify_if_needed(symbol, result, ai_text, current_price)
-                        print(f">>> [{symbol}] {curr.value} (Score: {result.win_rate_score}) <<<")
-                    else:
-                        # ステータス不変でも価格や一部のデータのみ更新
-                        system_state[symbol]["last_updated"] = datetime.now().isoformat()
-
-                    previous_status[symbol] = curr
+                    print(f"Sync Complete: {symbol} @ {result.win_rate_score}%")
                     
-                except Exception as sym_e:
-                    print(f"Error processing {symbol}: {sym_e}")
-                    await asyncio.sleep(5)
-
-            # 全銘柄一巡後の待機
-            await asyncio.sleep(300)
-            
+                except Exception as e:
+                    print(f"Error Syncing {symbol}: {e}")
+                    
+            await asyncio.sleep(300) # 5分おきに全銘柄同期
         except Exception as e:
-            print(f"Main Loop Critical Error: {e}")
+            print(f"Critical Loop Error: {e}")
             await asyncio.sleep(60)
 
 @app.on_event("startup")
@@ -134,19 +158,10 @@ async def startup_event():
 def get_prediction():
     return {"data": system_state, "overview": market_overview}
 
+@app.get("/api/chart/{symbol}")
+def get_chart(symbol: str):
+    return {"data": chart_data.get(symbol, [])}
+
 @app.get("/health")
 def health_check():
-    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
-
-@app.get("/api/history")
-def get_history(limit: int = 50):
-    history = []
-    if os.path.exists("annotations.jsonl"):
-        try:
-            with open("annotations.jsonl", "r", encoding="utf-8") as f:
-                lines = f.readlines()
-                for line in reversed(lines):
-                    history.append(json.loads(line))
-                    if len(history) >= limit: break
-        except Exception: pass
-    return {"data": history}
+    return {"status": "healthy"}
