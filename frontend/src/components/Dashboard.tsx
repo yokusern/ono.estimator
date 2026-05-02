@@ -1,13 +1,13 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo } from "react";
 import useSWR from "swr";
 import { 
   Activity, AlertTriangle, TrendingUp, DollarSign, BrainCircuit, 
   LayoutDashboard, Globe, Link2, History, ChevronRight, Zap, ShieldAlert,
-  CandlestickChart, BarChart, Clock, Target, Percent, Timer
+  CandlestickChart, BarChart, Clock, Target, Percent, Timer, Loader2
 } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
@@ -17,8 +17,12 @@ import dynamic from "next/dynamic";
 
 const TradingViewChart = dynamic(() => import("./TradingViewChart"), { ssr: false });
 
-const fetcher = (url: string) => fetch(url).then((res) => res.json());
-const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/$/, "");
+const fetcher = (url: string) => fetch(url).then((res) => {
+  if (!res.ok) throw new Error("API Offline");
+  return res.json();
+});
+
+const API_URL = (process.env.NEXT_PUBLIC_API_URL || "https://ono-estimator-backend.onrender.com").replace(/\/$/, "");
 
 const SYMBOLS = ["USDJPY", "GOLD", "BTC", "JP225", "XAGUSD", "AUDJPY", "EURUSD", "EURJPY"];
 const TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h"];
@@ -29,21 +33,16 @@ export default function Dashboard() {
   const [activeTF, setActiveTF] = useState("1m");
   const [margin, setMargin] = useState<number>(1000000);
 
-  const isMixedContentLocalhost = typeof window !== "undefined" && 
-    window.location.protocol === "https:" && 
-    API_URL.startsWith("http://localhost");
-
-  // TFをクエリパラメータとして渡す
-  const { data, error, isLoading } = useSWR(isMixedContentLocalhost ? null : `${API_URL}/api/predict?tf=${activeTF}`, fetcher, {
+  const { data, error, isLoading } = useSWR(`${API_URL}/api/predict?tf=${activeTF}`, fetcher, {
     refreshInterval: 30000,
-    shouldRetryOnError: false
+    revalidateOnFocus: true
   });
   
-  const { data: chartData } = useSWR(isMixedContentLocalhost ? null : `${API_URL}/api/chart/${activeSymbol}?tf=${activeTF}`, fetcher, {
+  const { data: chartData } = useSWR(`${API_URL}/api/chart/${activeSymbol}?tf=${activeTF}`, fetcher, {
     refreshInterval: 60000,
   });
 
-  const { data: historyData } = useSWR(isMixedContentLocalhost ? null : `${API_URL}/api/history`, fetcher, {
+  const { data: historyData } = useSWR(`${API_URL}/api/history`, fetcher, {
     refreshInterval: 60000,
   });
 
@@ -51,24 +50,37 @@ export default function Dashboard() {
 
   const currentData = useMemo(() => {
     return data?.data?.[activeSymbol] || {
-      status: "Wait",
+      status: "Analyzing",
       score: 0,
-      ai_text: "MTF Syncing...",
+      ai_text: "Intelligence Synchronizing...",
       predicted_price: 0,
-      probability: 0,
-      funda: { theme: "Initializing...", direction: "NEUTRAL" }
+      probability: 0
     };
   }, [data, activeSymbol]);
 
   const marketOverview = data?.overview || {
     fear_greed: "50",
-    global_theme: "Analyzing Global Macro..."
+    global_theme: "Mapping Market Synergy..."
   };
 
   const score = currentData?.score || 0;
   const isIronClad = score >= 80;
   const recommendedRiskPercent = score >= 80 ? 2 : score >= 60 ? 1 : 0.5;
   const riskAmount = (margin * recommendedRiskPercent) / 100;
+
+  if (isLoading && !data) {
+    return (
+      <div className="min-h-screen bg-white flex items-center justify-center">
+        <div className="flex flex-col items-center gap-6">
+          <div className="relative">
+            <BrainCircuit className="w-16 h-16 text-sky-500 animate-pulse" />
+            <Loader2 className="w-20 h-20 text-sky-100 animate-spin absolute -top-2 -left-2" />
+          </div>
+          <span className="text-xs font-black uppercase tracking-[0.6em] text-slate-300">Initializing Intelligence</span>
+        </div>
+      </div>
+    );
+  }
 
   const renderContent = () => {
     switch (activeTab) {
@@ -86,27 +98,29 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-white text-slate-900 flex flex-col font-sans selection:bg-sky-500/30 selection:text-sky-900">
-      
-      <header className="sticky top-0 z-50 w-full border-b border-slate-100 bg-white p-6">
-        <div className="max-w-[1600px] mx-auto flex justify-between items-center gap-6">
-          <div className="flex items-center gap-3 shrink-0">
-            <div className="bg-sky-500 p-2 rounded-2xl shadow-xl shadow-sky-100">
+    <div className="min-h-screen bg-white text-slate-900 flex flex-col selection:bg-sky-500/10 selection:text-sky-600">
+      <header className="sticky top-0 z-50 w-full glass border-b border-slate-100/50 p-6">
+        <div className="max-w-[1700px] mx-auto flex justify-between items-center gap-8">
+          <div className="flex items-center gap-4 shrink-0">
+            <div className="bg-sky-500 p-2.5 rounded-2xl shadow-2xl shadow-sky-200 animate-float">
               <BrainCircuit className="w-5 h-5 text-white" />
             </div>
-            <span className="font-black text-2xl tracking-tighter hidden lg:inline text-slate-900">
-              ONO <span className="text-sky-500">Estimator Pro</span>
-            </span>
+            <div className="flex flex-col">
+              <span className="font-black text-2xl tracking-tighter text-slate-900 leading-none">
+                ONO <span className="text-sky-500">Estimator</span>
+              </span>
+              <span className="text-[9px] font-black uppercase tracking-[0.4em] text-slate-300 mt-1">Ultra Pro v4.5</span>
+            </div>
           </div>
 
           <div className="flex-1 overflow-x-auto no-scrollbar">
-            <div className="flex items-center gap-1 bg-white p-1.5 rounded-[22px] border border-slate-100 w-max mx-auto shadow-sm">
+            <div className="flex items-center gap-1.5 bg-slate-50/50 p-1.5 rounded-[24px] border border-slate-100/50 w-max mx-auto">
               {SYMBOLS.map(s => (
                 <button 
                   key={s} 
                   onClick={() => setActiveSymbol(s)} 
-                  className={`px-5 py-2.5 rounded-[18px] text-[11px] font-black transition-all whitespace-nowrap tracking-widest uppercase ${
-                    activeSymbol === s ? "bg-sky-500 text-white shadow-xl shadow-sky-100 scale-105" : "text-slate-400 hover:text-slate-600 hover:bg-slate-100/50"
+                  className={`px-6 py-2.5 rounded-[20px] text-[10px] font-bold transition-all whitespace-nowrap tracking-widest uppercase ${
+                    activeSymbol === s ? "bg-white text-sky-600 shadow-premium scale-105" : "text-slate-400 hover:text-slate-600"
                   }`}
                 >
                   {s}
@@ -115,31 +129,31 @@ export default function Dashboard() {
             </div>
           </div>
 
-          <div className="flex items-center gap-4 shrink-0">
+          <div className="flex items-center gap-6 shrink-0">
             <div className="flex flex-col items-end">
-              <span className={`text-[10px] font-black tracking-[0.2em] uppercase ${isConnected ? 'text-sky-500' : 'text-red-500'}`}>
-                {isConnected ? 'MTF Monitoring Live' : 'Connecting'}
+              <span className={`text-[9px] font-black tracking-[0.3em] uppercase ${isConnected ? 'text-sky-500' : 'text-red-500'}`}>
+                {isConnected ? 'System Live' : 'Connecting'}
               </span>
-              <div className="flex items-center gap-2 mt-0.5">
-                <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-sky-500 animate-pulse' : 'bg-red-500 animate-ping'}`} />
+              <div className="flex items-center gap-2 mt-1">
+                <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-sky-500 shadow-[0_0_10px_#0ea5e9]' : 'bg-red-500'}`} />
               </div>
             </div>
           </div>
         </div>
       </header>
 
-      <main className="flex-1 overflow-y-auto p-6 md:p-12 pb-40 bg-white">
-        <div className="max-w-[1600px] mx-auto">
+      <main className="flex-1 p-6 md:p-12 pb-44">
+        <div className="max-w-[1700px] mx-auto">
           {renderContent()}
         </div>
       </main>
 
-      <nav className="fixed bottom-10 left-1/2 -translate-x-1/2 w-[92%] max-w-lg border border-slate-100 bg-white shadow-[0_20px_50px_rgba(0,0,0,0.1)] rounded-[40px] p-2.5 z-50">
+      <nav className="fixed bottom-10 left-1/2 -translate-x-1/2 w-[90%] max-w-lg glass shadow-premium rounded-[40px] p-2.5 z-50 border border-slate-200/50">
         <div className="grid grid-cols-4 gap-2">
-          <NavButton active={activeTab === "dashboard"} onClick={() => setActiveTab("dashboard")} icon={<LayoutDashboard size={20} />} label="Focus" />
-          <NavButton active={activeTab === "multi"} onClick={() => setActiveTab("multi")} icon={<Globe size={20} />} label="Multi" />
-          <NavButton active={activeTab === "correlation"} onClick={() => setActiveTab("correlation")} icon={<Link2 size={20} />} label="Market" />
-          <NavButton active={activeTab === "history"} onClick={() => setActiveTab("history")} icon={<History size={20} />} label="Logs" />
+          <NavButton active={activeTab === "dashboard"} onClick={() => setActiveTab("dashboard")} icon={<LayoutDashboard size={18} />} label="Focus" />
+          <NavButton active={activeTab === "multi"} onClick={() => setActiveTab("multi")} icon={<Globe size={18} />} label="Multi" />
+          <NavButton active={activeTab === "correlation"} onClick={() => setActiveTab("correlation")} icon={<Link2 size={18} />} label="Market" />
+          <NavButton active={activeTab === "history"} onClick={() => setActiveTab("history")} icon={<History size={18} />} label="Logs" />
         </div>
       </nav>
     </div>
@@ -148,7 +162,7 @@ export default function Dashboard() {
 
 function NavButton({ active, onClick, icon, label }: any) {
   return (
-    <button onClick={onClick} className={`flex flex-col items-center justify-center gap-1.5 py-4 rounded-[30px] transition-all duration-300 ${active ? "text-sky-600 bg-sky-50 shadow-sm" : "text-slate-400 hover:text-sky-500 hover:bg-sky-50/30"}`}>
+    <button onClick={onClick} className={`flex flex-col items-center justify-center gap-2 py-4 rounded-[32px] transition-all duration-500 ${active ? "text-sky-600 bg-white shadow-sm" : "text-slate-400 hover:text-sky-500"}`}>
       {icon} <span className="text-[9px] font-black uppercase tracking-[0.2em]">{label}</span>
     </button>
   );
@@ -156,52 +170,51 @@ function NavButton({ active, onClick, icon, label }: any) {
 
 function DashboardView({ symbol, data, chartData, margin, setMargin, riskAmount, recommendedRiskPercent, isIronClad, activeTF, setActiveTF }: any) {
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-4 gap-8 animate-in fade-in slide-in-from-bottom-8 duration-1000">
-      
-      <div className="lg:col-span-1 space-y-8">
-        <Card className={`overflow-hidden border-slate-100 bg-white shadow-2xl rounded-[40px] ${isIronClad ? 'ring-8 ring-yellow-400/20' : ''}`}>
-          <CardContent className="p-10 space-y-8 text-center">
-            <div className="flex flex-col items-center gap-4">
-              <Badge className="bg-sky-50 text-sky-600 border-sky-100 font-black text-[11px] px-5 py-2 rounded-2xl tracking-widest uppercase">
-                {symbol} Advantage ({activeTF})
+    <div className="grid grid-cols-1 lg:grid-cols-4 gap-10 animate-in fade-in slide-in-from-bottom-12 duration-1000">
+      <div className="lg:col-span-1 space-y-10">
+        <Card className={`overflow-hidden border-none bg-white shadow-premium rounded-[48px] ${isIronClad ? 'ring-2 ring-yellow-400' : ''}`}>
+          <CardContent className="p-12 space-y-10 text-center">
+            <div className="flex flex-col items-center gap-6">
+              <Badge className="bg-sky-50 text-sky-600 border-none font-black text-[10px] px-6 py-2.5 rounded-full tracking-widest uppercase shadow-sm">
+                {symbol} Strategy ({activeTF})
               </Badge>
               <div className="flex items-baseline gap-2">
-                <span className="text-8xl font-black tracking-tighter text-slate-900">{data?.score ?? 0}</span>
-                <span className="text-3xl font-black text-slate-200">%</span>
+                <span className="text-[140px] font-black tracking-tighter text-slate-900 leading-none">{data?.score ?? 0}</span>
+                <span className="text-4xl font-black text-slate-200">%</span>
               </div>
             </div>
             
-            <div className="grid grid-cols-2 gap-4">
-              <div className="bg-slate-50 rounded-2xl p-4 text-center border border-slate-100">
-                <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Target</p>
-                <p className="text-lg font-black text-sky-600">{data?.predicted_price || "---"}</p>
+            <div className="grid grid-cols-2 gap-6">
+              <div className="bg-slate-50/50 rounded-[32px] p-6 text-center border border-slate-100/50">
+                <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2">Target</p>
+                <p className="text-2xl font-black text-sky-600">{data?.predicted_price || "---"}</p>
               </div>
-              <div className="bg-slate-50 rounded-2xl p-4 text-center border border-slate-100">
-                <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Prob</p>
-                <p className="text-lg font-black text-emerald-500">{data?.probability || "0"}%</p>
+              <div className="bg-slate-50/50 rounded-[32px] p-6 text-center border border-slate-100/50">
+                <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2">Prob</p>
+                <p className="text-2xl font-black text-emerald-500">{data?.probability || "0"}%</p>
               </div>
             </div>
 
-            <div className="bg-white rounded-[32px] p-8 border border-slate-100 shadow-sm space-y-6">
-              <p className="text-lg font-black text-slate-800 leading-tight">MTF Strategy Active</p>
-              <Badge className="bg-yellow-400 text-slate-900 border-none font-black text-xs w-full py-4 rounded-2xl shadow-xl shadow-yellow-100 uppercase tracking-[0.2em]">
+            <div className="bg-slate-900 rounded-[40px] p-10 space-y-6 shadow-2xl shadow-slate-200">
+              <p className="text-sm font-black text-slate-400 uppercase tracking-[0.3em]">AI Signal Status</p>
+              <p className={`text-4xl font-black tracking-tighter uppercase ${data?.status?.includes('Buy') ? 'text-emerald-400' : data?.status?.includes('Sell') ? 'text-rose-400' : 'text-white'}`}>
                 {data?.status?.toUpperCase() || 'NEUTRAL'}
-              </Badge>
+              </p>
             </div>
           </CardContent>
         </Card>
 
-        <Card className="border-slate-100 bg-white shadow-2xl rounded-[40px] flex-1 flex flex-col min-h-[400px]">
-          <CardHeader className="pb-6 border-b border-slate-100 p-8">
-            <CardTitle className="text-[10px] font-black uppercase tracking-[0.4em] flex items-center gap-3 text-slate-400">
-              <Zap className="w-4 h-4 text-sky-500" />MTF Confluence Analysis
+        <Card className="border-none bg-white shadow-premium rounded-[48px] flex-1">
+          <CardHeader className="pb-8 border-b border-slate-50 p-10">
+            <CardTitle className="text-[10px] font-black uppercase tracking-[0.5em] flex items-center gap-4 text-slate-400">
+              <Zap className="w-5 h-5 text-sky-500" />Strategic Intelligence
             </CardTitle>
           </CardHeader>
-          <CardContent className="pt-8 p-8 flex-1 overflow-hidden">
-            <ScrollArea className="h-[400px] pr-4">
-              <div className="prose prose-sm prose-slate max-w-none">
+          <CardContent className="p-10">
+            <ScrollArea className="h-[350px] pr-6">
+              <div className="space-y-6">
                 {data?.ai_text?.split('\n').map((line: string, i: number) => (
-                  <p key={i} className={`mb-3 leading-relaxed font-medium ${line.includes('注意') ? 'text-red-500 font-bold bg-red-50 p-3 rounded-xl' : 'text-slate-600'}`}>
+                  <p key={i} className={`text-[15px] leading-relaxed font-medium ${line.includes('注意') || line.includes('重要') ? 'text-amber-600 font-bold bg-amber-50/50 p-6 rounded-[24px] border border-amber-100' : 'text-slate-500'}`}>
                     {line}
                   </p>
                 ))}
@@ -211,20 +224,22 @@ function DashboardView({ symbol, data, chartData, margin, setMargin, riskAmount,
         </Card>
       </div>
 
-      <div className="lg:col-span-2 space-y-8">
-        <Card className="border-slate-100 bg-white shadow-2xl rounded-[48px] overflow-hidden p-8">
-          {/* Timeframe Selector */}
-          <div className="flex items-center justify-between mb-8 px-4">
-            <div className="flex items-center gap-2">
-              <Timer className="w-4 h-4 text-sky-500" />
-              <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Select Interval</span>
+      <div className="lg:col-span-2 space-y-10">
+        <Card className="border-none bg-white shadow-premium rounded-[56px] overflow-hidden p-10">
+          <div className="flex items-center justify-between mb-10 px-4">
+            <div className="flex items-center gap-4">
+              <div className="bg-slate-100 p-3 rounded-2xl"><Timer className="w-5 h-5 text-slate-400" /></div>
+              <div className="flex flex-col">
+                <span className="text-[10px] font-black uppercase tracking-widest text-slate-300">Interval</span>
+                <span className="text-sm font-black text-slate-900">{activeTF.toUpperCase()} View</span>
+              </div>
             </div>
-            <div className="flex items-center gap-1 bg-slate-50 p-1 rounded-2xl border border-slate-100">
+            <div className="flex items-center gap-1.5 bg-slate-50 p-1.5 rounded-[24px] border border-slate-100/50">
               {TIMEFRAMES.map(tf => (
                 <button 
                   key={tf} 
                   onClick={() => setActiveTF(tf)}
-                  className={`px-4 py-2 rounded-xl text-[10px] font-black transition-all ${activeTF === tf ? "bg-white text-sky-600 shadow-sm" : "text-slate-400 hover:text-slate-600"}`}
+                  className={`px-5 py-2.5 rounded-[18px] text-[10px] font-black transition-all ${activeTF === tf ? "bg-white text-sky-600 shadow-sm" : "text-slate-400 hover:text-slate-600"}`}
                 >
                   {tf.toUpperCase()}
                 </button>
@@ -232,61 +247,57 @@ function DashboardView({ symbol, data, chartData, margin, setMargin, riskAmount,
             </div>
           </div>
 
-          <TradingViewChart data={chartData} symbol={symbol} />
+          <div className="h-[600px] w-full bg-slate-50/30 rounded-[40px] border border-slate-100/50 overflow-hidden">
+            <TradingViewChart data={chartData} symbol={symbol} />
+          </div>
           
-          <Separator className="my-8 bg-slate-100" />
-          
-          <div className="grid grid-cols-2 gap-8">
-            <div className="bg-white rounded-[32px] p-8 border border-slate-100 shadow-sm">
-              <div className="flex items-center justify-between mb-4">
-                <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">RSI Oscillator ({activeTF})</span>
-                <span className={`text-lg font-black ${chartData.at(-1)?.rsi > 70 ? 'text-red-500' : chartData.at(-1)?.rsi < 30 ? 'text-sky-500' : 'text-slate-600'}`}>
+          <div className="grid grid-cols-2 gap-10 mt-10">
+            <div className="bg-white rounded-[40px] p-10 border border-slate-100/50 shadow-sm">
+              <div className="flex items-center justify-between mb-6">
+                <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Momentum Index</span>
+                <span className={`text-2xl font-black ${chartData.at(-1)?.rsi > 70 ? 'text-rose-500' : chartData.at(-1)?.rsi < 30 ? 'text-sky-500' : 'text-slate-900'}`}>
                   {chartData.at(-1)?.rsi?.toFixed(1) || '0.0'}
                 </span>
               </div>
-              <div className="h-3 w-full bg-slate-100 rounded-full overflow-hidden">
-                <div className="h-full bg-sky-500 shadow-[0_0_10px_rgba(14,165,233,0.5)]" style={{ width: `${chartData.at(-1)?.rsi || 0}%` }} />
+              <div className="h-4 w-full bg-slate-100 rounded-full overflow-hidden p-1">
+                <div className="h-full bg-sky-500 rounded-full shadow-[0_0_15px_rgba(14,165,233,0.4)]" style={{ width: `${chartData.at(-1)?.rsi || 0}%` }} />
               </div>
             </div>
-            <div className="bg-white rounded-[32px] p-8 border border-slate-100 shadow-sm text-center">
-              <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 block mb-2">Trend Alignment</span>
-              <p className="text-xl font-black text-slate-900">CONFLUENCE ACTIVE</p>
+            <div className="bg-sky-500 rounded-[40px] p-10 flex flex-col justify-center text-center shadow-xl shadow-sky-100">
+              <span className="text-[10px] font-black uppercase tracking-[0.3em] text-sky-100 mb-2">Trend Alignment</span>
+              <p className="text-2xl font-black text-white">CONFLUENCE ACTIVE</p>
             </div>
           </div>
         </Card>
       </div>
 
-      <div className="lg:col-span-1 space-y-8">
-        <Card className="border-slate-100 bg-white shadow-2xl rounded-[40px]">
-          <CardHeader className="pb-6 border-b border-slate-100 p-8">
-            <CardTitle className="text-[10px] font-black uppercase tracking-[0.4em] flex items-center gap-3 text-slate-400">
-              <DollarSign className="w-4 h-4 text-sky-500" />Risk Management
+      <div className="lg:col-span-1 space-y-10">
+        <Card className="border-none bg-white shadow-premium rounded-[48px]">
+          <CardHeader className="pb-8 border-b border-slate-50 p-10">
+            <CardTitle className="text-[10px] font-black uppercase tracking-[0.5em] flex items-center gap-4 text-slate-400">
+              <ShieldAlert className="w-5 h-5 text-rose-500" />Risk Management
             </CardTitle>
           </CardHeader>
-          <CardContent className="pt-8 p-8 space-y-8">
+          <CardContent className="p-10 space-y-10">
             <div className="space-y-4">
-              <Label className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-400 ml-2">Total Margin (JPY)</Label>
-              <Input type="number" value={margin} onChange={(e) => setMargin(Number(e.target.value))} className="bg-white border-slate-100 font-black text-3xl h-20 rounded-[24px] px-8 text-slate-900 shadow-sm focus:ring-sky-500 focus:border-sky-500 transition-all" />
+              <Label className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-300 ml-4">Account Margin (JPY)</Label>
+              <Input type="number" value={margin} onChange={(e) => setMargin(Number(e.target.value))} className="bg-slate-50 border-none font-black text-4xl h-24 rounded-[32px] px-10 text-slate-900 shadow-inner focus:ring-2 ring-sky-500 transition-all" />
             </div>
-            <div className="space-y-4">
-              <div className="bg-red-50 p-6 rounded-[32px] border border-red-100 flex items-center justify-between shadow-sm">
-                <div>
-                  <p className="text-[9px] font-black uppercase tracking-[0.2em] text-red-500 mb-1">Loss Limit</p>
-                  <p className="text-2xl font-black text-red-600 tabular-nums">¥{Math.floor(riskAmount).toLocaleString()}</p>
-                </div>
-                <ShieldAlert size={28} className="text-red-400 opacity-50" />
-              </div>
+            <div className="bg-rose-50/50 p-10 rounded-[40px] border border-rose-100/50 flex flex-col gap-2">
+              <p className="text-[10px] font-black uppercase tracking-[0.3em] text-rose-500">Max Loss Allowance</p>
+              <p className="text-4xl font-black text-rose-600 tabular-nums">¥{Math.floor(riskAmount).toLocaleString()}</p>
+              <p className="text-[10px] font-bold text-rose-400 mt-2 uppercase tracking-widest">Recommended Risk: {recommendedRiskPercent}%</p>
             </div>
           </CardContent>
         </Card>
 
-        <Card className="border-slate-100 bg-white p-8 shadow-2xl rounded-[40px] flex items-center gap-6 border-l-8 border-sky-500">
-          <div className="bg-sky-50 p-4 rounded-2xl">
-            <Activity className="w-8 h-8 text-sky-500 animate-pulse" />
+        <Card className="border-none bg-slate-900 p-10 shadow-premium rounded-[48px] flex items-center gap-8 group">
+          <div className="bg-sky-500/20 p-5 rounded-[24px] group-hover:scale-110 transition-transform">
+            <Activity className="w-8 h-8 text-sky-400" />
           </div>
           <div className="space-y-1">
-            <p className="text-[9px] font-black uppercase tracking-[0.3em] text-slate-300">MTF Market Sync</p>
-            <p className="text-sm font-black text-slate-800">5-Layer Analysis Live</p>
+            <p className="text-[10px] font-black uppercase tracking-[0.4em] text-sky-400">AI Active</p>
+            <p className="text-lg font-black text-white">Multi-Layer Scanning</p>
           </div>
         </Card>
       </div>
@@ -296,22 +307,22 @@ function DashboardView({ symbol, data, chartData, margin, setMargin, riskAmount,
 
 function MultiAssetView({ allData, setActiveSymbol }: any) {
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8 animate-in slide-in-from-bottom-12 duration-1000">
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-10 animate-in slide-in-from-bottom-12 duration-1000">
       {SYMBOLS.map(sym => {
         const d = allData?.[sym];
-        const isStart = d?.status?.includes('Start');
-        const score = d?.score || 0;
+        const isHot = d?.score >= 80;
         return (
-          <Card key={sym} onClick={() => setActiveSymbol(sym)} className={`group cursor-pointer hover:scale-[1.05] transition-all duration-500 border-slate-100 bg-white p-2 rounded-[48px] shadow-xl ${isStart ? 'ring-4 ring-sky-400' : ''}`}>
-            <CardContent className="p-10 space-y-6">
-              <div className="flex justify-between items-start">
-                <h3 className="font-black text-3xl tracking-tighter group-hover:text-sky-600 transition-colors">{sym}</h3>
-                <Badge className={`${isStart ? 'bg-sky-500 text-white shadow-lg shadow-sky-100' : 'bg-slate-100 text-slate-400'} font-black text-[10px] px-5 py-2.5 rounded-2xl border-none uppercase tracking-widest`}>{d?.status?.toUpperCase() || 'OFFLINE'}</Badge>
+          <Card key={sym} onClick={() => setActiveSymbol(sym)} className={`group cursor-pointer hover:translate-y-[-12px] transition-all duration-700 border-none bg-white p-4 rounded-[56px] shadow-premium ${isHot ? 'ring-2 ring-sky-500' : ''}`}>
+            <CardContent className="p-12 space-y-8">
+              <div className="flex justify-between items-center">
+                <h3 className="font-black text-4xl tracking-tighter text-slate-900">{sym}</h3>
+                <div className={`w-3 h-3 rounded-full ${isHot ? 'bg-sky-500 shadow-[0_0_10px_#0ea5e9]' : 'bg-slate-200'}`} />
               </div>
               <div className="flex items-baseline gap-2">
-                <span className={`text-7xl font-black tracking-tighter tabular-nums ${score >= 80 ? 'text-sky-500' : 'text-slate-900'}`}>{score}</span>
-                <span className="text-3xl font-black text-slate-100">%</span>
+                <span className={`text-[100px] font-black tracking-tighter tabular-nums leading-none ${isHot ? 'text-sky-500' : 'text-slate-900'}`}>{d?.score || 0}</span>
+                <span className="text-3xl font-black text-slate-200">%</span>
               </div>
+              <Badge className="bg-slate-50 text-slate-400 border-none w-full py-4 rounded-3xl font-black text-[10px] tracking-widest uppercase">{d?.status || 'Analyzing'}</Badge>
             </CardContent>
           </Card>
         );
@@ -322,24 +333,23 @@ function MultiAssetView({ allData, setActiveSymbol }: any) {
 
 function CorrelationView({ overview }: any) {
   return (
-    <div className="space-y-16 animate-in zoom-in-95 duration-1000 py-10 max-w-6xl mx-auto">
-      <div className="text-center space-y-6 mb-20">
-        <div className="bg-white w-32 h-32 rounded-[56px] border border-slate-100 flex items-center justify-center mx-auto mb-10 shadow-2xl shadow-sky-50/20"><Link2 className="text-sky-500 w-16 h-16" /></div>
-        <h2 className="text-7xl font-black tracking-tighter text-slate-900 uppercase">Pro Intelligence</h2>
-        <p className="text-slate-400 text-2xl font-medium tracking-tight">Cross-Asset & Global Macro Analytics Matrix</p>
+    <div className="space-y-20 animate-in zoom-in-95 duration-1000 py-10 max-w-7xl mx-auto">
+      <div className="text-center space-y-6">
+        <div className="bg-sky-50 w-32 h-32 rounded-[56px] flex items-center justify-center mx-auto mb-10 animate-float shadow-xl shadow-sky-100"><Link2 className="text-sky-500 w-16 h-16" /></div>
+        <h2 className="text-8xl font-black tracking-tighter text-slate-900 uppercase">Pro Sentiment</h2>
+        <p className="text-slate-400 text-2xl font-medium tracking-tight">Cross-Asset Intelligence Matrix</p>
       </div>
       
       <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
-        <Card className="border-slate-100 bg-white p-14 rounded-[60px] shadow-2xl border-t-8 border-yellow-400">
-          <h3 className="text-[11px] font-black uppercase tracking-[0.5em] text-slate-400 mb-12 flex items-center gap-4"><Zap className="text-yellow-500 w-6 h-6" />Macro Core Sentiment</h3>
-          <div className="space-y-10">
-            <div className="bg-white p-12 rounded-[40px] border border-slate-100 text-center shadow-sm">
-              <p className="text-[12px] font-black uppercase tracking-[0.3em] text-slate-400 mb-6">Fear & Greed Index</p>
-              <p className="text-[120px] font-black text-sky-500 tabular-nums leading-none tracking-tighter">{overview.fear_greed}</p>
+        <Card className="border-none bg-white p-16 rounded-[64px] shadow-premium">
+          <h3 className="text-[12px] font-black uppercase tracking-[0.6em] text-slate-300 mb-16 flex items-center gap-5"><Zap className="text-amber-500 w-6 h-6" />Macro Core</h3>
+          <div className="space-y-12">
+            <div className="bg-slate-50 rounded-[48px] p-16 text-center">
+              <p className="text-[12px] font-black uppercase tracking-[0.4em] text-slate-400 mb-8">Fear & Greed Index</p>
+              <p className="text-[160px] font-black text-sky-500 tabular-nums leading-none tracking-tighter">{overview.fear_greed}</p>
             </div>
-            <div className="bg-white p-12 rounded-[40px] border-2 border-slate-100 shadow-sm">
-              <p className="text-[12px] font-black uppercase tracking-[0.3em] text-slate-400 mb-6">Market Direction</p>
-              <p className="text-3xl font-bold text-slate-800 leading-relaxed tracking-tight">{overview.global_theme}</p>
+            <div className="p-10 border-2 border-slate-50 rounded-[48px]">
+              <p className="text-3xl font-black text-slate-800 leading-relaxed text-center">{overview.global_theme}</p>
             </div>
           </div>
         </Card>
@@ -349,60 +359,56 @@ function CorrelationView({ overview }: any) {
 }
 
 function HistoryView({ history }: { history: any[] }) {
-  if (!history || history.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center py-40 text-slate-200 space-y-6">
-        <History size={100} className="animate-pulse" />
-        <p className="text-xs font-black uppercase tracking-[0.5em] text-slate-400">No prediction history yet...</p>
-      </div>
-    );
-  }
-
   return (
-    <div className="max-w-6xl mx-auto space-y-6 animate-in slide-in-from-bottom-8 duration-700">
-      <div className="flex items-center justify-between mb-10 px-4">
-        <div>
-          <h2 className="text-4xl font-black tracking-tighter text-slate-900 uppercase">Intelligence Logs</h2>
-          <p className="text-slate-400 text-sm font-medium tracking-widest mt-2 uppercase">Past Predictions & Strategic Rationale</p>
-        </div>
+    <div className="max-w-7xl mx-auto space-y-10 animate-in slide-in-from-bottom-12 duration-1000">
+      <div className="px-6">
+        <h2 className="text-6xl font-black tracking-tighter text-slate-900 uppercase">Intelligence Logs</h2>
+        <p className="text-slate-400 text-lg font-medium tracking-[0.2em] mt-4 uppercase">Verification of Past Strategic Scenarios</p>
       </div>
       
-      <div className="grid grid-cols-1 gap-6">
-        {history.map((item, i) => (
-          <Card key={item.id || i} className="border-slate-100 bg-white shadow-xl rounded-[32px] overflow-hidden hover:shadow-2xl transition-all border-l-8 border-sky-500">
-            <CardContent className="p-8">
-              <div className="flex flex-col md:flex-row justify-between gap-8">
-                <div className="space-y-4 flex-1">
-                  <div className="flex items-center gap-4">
-                    <span className="text-2xl font-black text-slate-900">{item.symbol}</span>
-                    <Badge className={`font-black text-[10px] px-3 py-1 rounded-lg ${item.status?.includes('Start') ? 'bg-sky-500 text-white' : 'bg-slate-100 text-slate-400'}`}>
-                      {item.status}
-                    </Badge>
-                    <div className="flex items-center gap-1.5 text-slate-400">
-                      <Clock size={14} />
-                      <span className="text-[10px] font-bold">{new Date(item.created_at).toLocaleString()}</span>
+      <div className="grid grid-cols-1 gap-8">
+        {history.length === 0 ? (
+          <div className="bg-slate-50 rounded-[56px] py-40 text-center flex flex-col items-center gap-6">
+            <Loader2 className="w-16 h-16 text-slate-200 animate-spin" />
+            <p className="text-xs font-black uppercase tracking-[0.5em] text-slate-300">Synchronizing History...</p>
+          </div>
+        ) : (
+          history.map((item, i) => (
+            <Card key={item.id || i} className="border-none bg-white shadow-premium rounded-[48px] overflow-hidden hover:scale-[1.01] transition-transform">
+              <CardContent className="p-12">
+                <div className="flex flex-col lg:flex-row justify-between gap-12">
+                  <div className="space-y-6 flex-1">
+                    <div className="flex items-center gap-6">
+                      <span className="text-4xl font-black text-slate-900 tracking-tighter">{item.symbol}</span>
+                      <Badge className="bg-sky-500 text-white font-black text-[10px] px-6 py-2 rounded-2xl border-none uppercase tracking-widest shadow-lg shadow-sky-100">
+                        {item.status}
+                      </Badge>
+                      <div className="flex items-center gap-3 text-slate-300">
+                        <Clock size={16} />
+                        <span className="text-[11px] font-black uppercase tracking-widest">{new Date(item.created_at).toLocaleString()}</span>
+                      </div>
+                    </div>
+                    <p className="text-lg text-slate-500 leading-relaxed font-medium line-clamp-2">
+                      {item.ai_text}
+                    </p>
+                  </div>
+                  
+                  <div className="flex items-center gap-10 shrink-0 bg-slate-50/50 p-10 rounded-[40px] border border-slate-100/50">
+                    <div className="text-center">
+                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2">Target</p>
+                      <p className="text-3xl font-black text-sky-600">{item.predicted_price || "---"}</p>
+                    </div>
+                    <Separator orientation="vertical" className="h-12 bg-slate-200" />
+                    <div className="text-center">
+                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2">Prob</p>
+                      <p className="text-3xl font-black text-emerald-500">{item.probability || "0"}%</p>
                     </div>
                   </div>
-                  <p className="text-sm text-slate-600 leading-relaxed font-medium line-clamp-3">
-                    {item.ai_text}
-                  </p>
                 </div>
-                
-                <div className="flex items-center gap-6 shrink-0 bg-slate-50 p-6 rounded-3xl border border-slate-100">
-                  <div className="text-center">
-                    <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-1 flex items-center justify-center gap-1"><Target size={10} /> Target</p>
-                    <p className="text-xl font-black text-sky-600">{item.predicted_price || "---"}</p>
-                  </div>
-                  <Separator orientation="vertical" className="h-10 bg-slate-200" />
-                  <div className="text-center">
-                    <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-1 flex items-center justify-center gap-1"><Percent size={10} /> Prob</p>
-                    <p className="text-xl font-black text-emerald-500">{item.probability || "0"}%</p>
-                  </div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
+              </CardContent>
+            </Card>
+          ))
+        )}
       </div>
     </div>
   );
