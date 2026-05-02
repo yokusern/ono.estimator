@@ -22,7 +22,7 @@ export default function TradingViewChart({ data, symbol }: { data: any[], symbol
       height: 450,
       crosshair: { mode: CrosshairMode.Normal },
       timeScale: { borderColor: "#E2E8F0", timeVisible: true, secondsVisible: false },
-    });
+    }) as any;
 
     // 1. ローソク足
     const candlestickSeries = chart.addCandlestickSeries({
@@ -42,14 +42,14 @@ export default function TradingViewChart({ data, symbol }: { data: any[], symbol
 
     // 2. 移動平均線 (MA25)
     const maSeries = chart.addLineSeries({ color: "#FACC15", lineWidth: 2, title: "MA25" });
-    maSeries.setData(data.map(d => ({ time: d.time, value: d.ma25 })));
+    maSeries.setData(data.map(d => ({ time: d.time, value: d.ma25 || 0 })));
 
     // 3. ボリンジャーバンド (Upper)
     const bbUpperSeries = chart.addLineSeries({ color: "#CBD5E1", lineWidth: 1, lineStyle: 2, title: "BB Upper" });
-    bbUpperSeries.setData(data.map(d => ({ time: d.time, value: d.bb_upper })));
+    bbUpperSeries.setData(data.map(d => ({ time: d.time, value: d.bb_upper || 0 })));
     
     const bbLowerSeries = chart.addLineSeries({ color: "#CBD5E1", lineWidth: 1, lineStyle: 2, title: "BB Lower" });
-    bbLowerSeries.setData(data.map(d => ({ time: d.time, value: d.bb_lower })));
+    bbLowerSeries.setData(data.map(d => ({ time: d.time, value: d.bb_lower || 0 })));
 
     chart.timeScale().fitContent();
 
