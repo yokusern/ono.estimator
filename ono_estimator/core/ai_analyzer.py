@@ -13,9 +13,9 @@ class GeminiAnalyzer:
 
         try:
             genai.configure(api_key=api_key)
-            # モデル名の修正 (最新の安定版)
-            self.model = genai.GenerativeModel('gemini-1.5-flash-latest')
-            print("[Gemini] Engine Online (v1.5-flash-latest)")
+            # モデル名をより一般的なものに変更
+            self.model = genai.GenerativeModel('gemini-1.5-flash')
+            print("[Gemini] Engine Online (gemini-1.5-flash)")
         except Exception as e:
             print(f"[Gemini] Init Error: {e}")
             traceback.print_exc()

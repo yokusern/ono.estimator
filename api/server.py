@@ -220,6 +220,10 @@ def get_chart(symbol: str, tf: str = Query("1m", regex="^(1m|5m|15m|1h|4h)$")):
 def get_history():
     return {"data": db.get_history(limit=50)}
 
+@app.get("/")
+def read_root():
+    return {"status": "ONO Estimator Backend Active", "time": datetime.now().isoformat()}
+
 @app.get("/api/health")
 def health_check():
     return {

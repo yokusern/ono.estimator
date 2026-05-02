@@ -109,11 +109,18 @@ class HybridDataFetcher:
         return None
 
     def _fetch_yfinance(self, symbol: str, interval: str) -> Optional[pd.DataFrame]:
-        yf_interval = "1m" if interval == "1min" else "5m"
-        df = yf.download(symbol, period="5d", interval=yf_interval, progress=False)
-        if not df.empty:
-            df.columns = [c.lower() for c in df.columns]
-            return df
+        try:
+            yf_interval = "1m" if interval == "1min" else "5m"
+            df = yf.download(symbol, period="5d", interval=yf_interval, progress=False)
+            if not df.empty:
+                # MultiIndexカラムをフラット化
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                # 文字列変換して小文字化
+                df.columns = [str(c).lower() for c in df.columns]
+                return df
+        except Exception as e:
+            print(f"[Fetcher] yfinance error for {symbol}: {e}")
         return None
 
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
