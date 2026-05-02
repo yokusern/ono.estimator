@@ -15,22 +15,23 @@ export default function TradingViewChart({ data, symbol }: { data: any[], symbol
         textColor: "#64748B",
       },
       grid: {
-        vertLines: { color: "#F1F5F9" },
-        horzLines: { color: "#F1F5F9" },
+        vertLines: { color: "#F8FAFC" },
+        horzLines: { color: "#F8FAFC" },
       },
       width: chartContainerRef.current.clientWidth,
       height: 450,
       crosshair: { mode: CrosshairMode.Normal },
-      timeScale: { borderColor: "#E2E8F0", timeVisible: true, secondsVisible: false },
+      timeScale: { borderColor: "#F1F5F9", timeVisible: true, secondsVisible: false },
     }) as any;
 
     // 1. ローソク足
+    // @ts-ignore
     const candlestickSeries = chart.addCandlestickSeries({
       upColor: "#0EA5E9",
-      downColor: "#F43F5E",
+      downColor: "#94A3B8",
       borderVisible: false,
       wickUpColor: "#0EA5E9",
-      wickDownColor: "#F43F5E",
+      wickDownColor: "#94A3B8",
     });
     candlestickSeries.setData(data.map(d => ({
       time: d.time,
@@ -45,10 +46,10 @@ export default function TradingViewChart({ data, symbol }: { data: any[], symbol
     maSeries.setData(data.map(d => ({ time: d.time, value: d.ma25 || 0 })));
 
     // 3. ボリンジャーバンド (Upper)
-    const bbUpperSeries = chart.addLineSeries({ color: "#CBD5E1", lineWidth: 1, lineStyle: 2, title: "BB Upper" });
+    const bbUpperSeries = chart.addLineSeries({ color: "#E2E8F0", lineWidth: 1, lineStyle: 2, title: "BB Upper" });
     bbUpperSeries.setData(data.map(d => ({ time: d.time, value: d.bb_upper || 0 })));
     
-    const bbLowerSeries = chart.addLineSeries({ color: "#CBD5E1", lineWidth: 1, lineStyle: 2, title: "BB Lower" });
+    const bbLowerSeries = chart.addLineSeries({ color: "#E2E8F0", lineWidth: 1, lineStyle: 2, title: "BB Lower" });
     bbLowerSeries.setData(data.map(d => ({ time: d.time, value: d.bb_lower || 0 })));
 
     chart.timeScale().fitContent();
