@@ -1,4 +1,5 @@
-from typing import Dict
+import pandas as pd
+from typing import Dict, Optional
 from .models import PredictionResult, SignalStatus, TimeFrame
 from .data import MTFData
 from ..systems import SVSystem, LWSystem, TKSSystem
