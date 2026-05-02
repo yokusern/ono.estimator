@@ -18,11 +18,15 @@ import dynamic from "next/dynamic";
 const TradingViewChart = dynamic(() => import("./TradingViewChart"), { ssr: false });
 
 const fetcher = (url: string) => fetch(url).then((res) => {
-  if (!res.ok) throw new Error("API Offline");
+  if (!res.ok) throw new Error("API Connection Failed");
   return res.json();
 });
 
-const API_URL = (process.env.NEXT_PUBLIC_API_URL || "https://ono-estimator-backend.onrender.com").replace(/\/$/, "");
+// デフォルトURLを環境変数またはRenderの想定URLに設定
+const API_URL = (
+  process.env.NEXT_PUBLIC_API_URL || 
+  "https://ono-estimator-backend.onrender.com"
+).replace(/\/$/, "");
 
 const SYMBOLS = ["USDJPY", "GOLD", "BTC", "JP225", "XAGUSD", "AUDJPY", "EURUSD", "EURJPY"];
 const TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h"];
@@ -35,7 +39,9 @@ export default function Dashboard() {
 
   const { data, error, isLoading } = useSWR(`${API_URL}/api/predict?tf=${activeTF}`, fetcher, {
     refreshInterval: 30000,
-    revalidateOnFocus: true
+    revalidateOnFocus: true,
+    shouldRetryOnError: true,
+    errorRetryCount: 3
   });
   
   const { data: chartData } = useSWR(`${API_URL}/api/chart/${activeSymbol}?tf=${activeTF}`, fetcher, {
@@ -130,6 +136,12 @@ export default function Dashboard() {
           </div>
 
           <div className="flex items-center gap-6 shrink-0">
+            {error && (
+              <div className="flex items-center gap-2 bg-red-50 px-4 py-2 rounded-xl border border-red-100 animate-pulse">
+                <AlertTriangle className="w-3 h-3 text-red-500" />
+                <span className="text-[9px] font-black text-red-500 uppercase tracking-widest">API Offline</span>
+              </div>
+            )}
             <div className="flex flex-col items-end">
               <span className={`text-[9px] font-black tracking-[0.3em] uppercase ${isConnected ? 'text-sky-500' : 'text-red-500'}`}>
                 {isConnected ? 'System Live' : 'Connecting'}
