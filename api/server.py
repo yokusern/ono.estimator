@@ -24,7 +24,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-target_symbols = ["USDJPY", "GOLD", "BTC", "JP225", "XAGUSD", "AUDJPY", "EURUSD", "EURJPY"]
+# 監視銘柄の最適化 (yfinance/安定性重視)
+target_symbols = ["USDJPY=X", "GC=F", "BTC-USD", "^N225", "XAGUSD=X", "AUDJPY=X", "EURUSD=X", "EURJPY=X"]
 
 # グローバルステート
 system_state = {sym: {"status": "Wait", "score": 0, "ai_text": "Syncing...", "funda": {}} for sym in target_symbols}
@@ -35,7 +36,6 @@ async def estimation_loop():
     fetcher = HybridDataFetcher()
     engine = ONOPredictionEngine()
     ai_analyzer = GeminiAnalyzer()
-    funda_analyzer = FundaAnalyzer()
     
     while True:
         try:
@@ -45,22 +45,27 @@ async def estimation_loop():
                 try:
                     # 1. 冗長化されたデータ取得
                     df = fetcher.fetch_ohlcv(symbol)
-                    if df is None: continue
+                    
+                    # 厳格なバリデーション: None, 空, または DataFrame 以外はスキップ
+                    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+                        print(f"[Loop] Skip {symbol}: No valid data.")
+                        continue
                     
                     # 2. 指標計算
                     df = fetcher.calculate_indicators(df)
+                    if len(df) < 2: continue
                     
                     # 3. テクニカル判定
                     result = engine.analyze(None, symbol=symbol, df_precomputed=df)
                     
-                    # AI分析用の指標サマリーを作成
+                    # AI分析用の指標サマリーを作成 (floatキャストで安全に)
                     latest = df.iloc[-1]
                     batch_metrics[symbol] = {
-                        "status": result.status.value,
+                        "status": result.status.value if result.status else "Standby",
                         "score": result.win_rate_score,
-                        "rsi": round(latest['rsi'], 1),
-                        "macd": round(latest['macd'], 4),
-                        "theme": "Stable" # Funda分析を統合可能
+                        "rsi": round(float(latest.get('rsi', 0)), 1),
+                        "macd": round(float(latest.get('macd', 0)), 4),
+                        "theme": "Stable"
                     }
                     
                     # チャートデータの更新
@@ -68,33 +73,42 @@ async def estimation_loop():
                     for idx, row in df.tail(100).iterrows():
                         records.append({
                             "time": int(idx.timestamp()),
-                            "open": row['open'], "high": row['high'], "low": row['low'], "close": row['close'],
-                            "ma25": row['ma25'], "bb_upper": row['bb_upper'], "bb_lower": row['bb_lower'],
-                            "rsi": row['rsi'], "macd": row['macd'], "hist": row['hist']
+                            "open": float(row['open']), "high": float(row['high']), "low": float(row['low']), "close": float(row['close']),
+                            "ma25": float(row.get('ma25', 0)), "bb_upper": float(row.get('bb_upper', 0)), "bb_lower": float(row.get('bb_lower', 0)),
+                            "rsi": float(row.get('rsi', 0)), "macd": float(row.get('macd', 0)), "hist": float(row.get('hist', 0))
                         })
                     chart_data[symbol] = records
                     
                 except Exception as e:
                     print(f"[Loop] Error on {symbol}: {e}")
                 
-                await asyncio.sleep(2) # API制限に配慮（強化）
+                await asyncio.sleep(3) # レート制限対策をさらに強化
 
-            # 4. 一括 AI 分析 (1リクエストで8銘柄)
+            # 4. 一括 AI 分析 (データがある場合のみ)
             if batch_metrics:
                 ai_results = ai_analyzer.batch_analyze(batch_metrics)
-                market_overview["global_theme"] = ai_results.get("market_intelligence", "Stable Correlation")
                 
-                for sym in target_symbols:
-                    if sym in ai_results:
-                        system_state[sym].update({
-                            "status": batch_metrics[sym]["status"],
-                            "score": batch_metrics[sym]["score"],
-                            "ai_text": ai_results[sym]["ai_text"],
-                            "last_updated": datetime.now().isoformat()
-                        })
+                # 型チェック: 辞書でない場合はスキップ
+                if isinstance(ai_results, dict):
+                    market_overview["global_theme"] = ai_results.get("market_intelligence", "Analyzing Market Correlation...")
+                    
+                    for sym in target_symbols:
+                        if sym in ai_results and isinstance(ai_results[sym], dict):
+                            system_state[sym].update({
+                                "status": batch_metrics.get(sym, {}).get("status", "Standby"),
+                                "score": batch_metrics.get(sym, {}).get("score", 0),
+                                "ai_text": ai_results[sym].get("ai_text", "Analysis Pending..."),
+                                "last_updated": datetime.now().isoformat()
+                            })
+                else:
+                    print("[Gemini] Unexpected response format, skipping state update.")
 
             print(f"--- Batch Sync Complete: {datetime.now().isoformat()} ---")
             await asyncio.sleep(300) # 5分おき
+            
+        except Exception as e:
+            print(f"Critical Loop Error: {e}")
+            await asyncio.sleep(60)
             
         except Exception as e:
             print(f"Critical Loop Error: {e}")

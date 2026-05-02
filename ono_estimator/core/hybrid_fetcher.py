@@ -19,7 +19,8 @@ class HybridDataFetcher:
             try:
                 url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&apikey={self.twelve_key}&outputsize=100"
                 res = requests.get(url).json()
-                if "values" in res:
+                # バリデーション: 辞書型かつ values キーが存在することを確認
+                if isinstance(res, dict) and "values" in res and isinstance(res["values"], list):
                     df = pd.DataFrame(res["values"])
                     df["datetime"] = pd.to_datetime(df["datetime"])
                     df = df.set_index("datetime").sort_index()
@@ -36,7 +37,7 @@ class HybridDataFetcher:
                 t_symbol = symbol.lower()
                 url = f"https://api.tiingo.com/tiingo/crypto/prices?tickers={t_symbol}&resampleFreq={interval}&token={self.tiingo_key}"
                 res = requests.get(url).json()
-                if res and isinstance(res, list):
+                if res and isinstance(res, list) and len(res) > 0 and "priceData" in res[0]:
                     df = pd.DataFrame(res[0]["priceData"])
                     df["date"] = pd.to_datetime(df["date"])
                     df = df.set_index("date").sort_index()
