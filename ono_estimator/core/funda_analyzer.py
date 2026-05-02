@@ -1,63 +1,51 @@
 import os
-import json
 import google.generativeai as genai
-from tenacity import retry, stop_after_attempt, wait_exponential
+from .market_context import MarketContextFetcher
 
 class FundaAnalyzer:
-    """7つの外部指標を統合し、Gemini 1.5 Pro で多角的な分析を行うクラス"""
     def __init__(self):
         api_key = os.environ.get("GEMINI_API_KEY")
         if api_key:
-            genai.configure(api_key=api_key)
-            self.model = genai.GenerativeModel('gemini-1.5-flash-latest')
+            try:
+                genai.configure(api_key=api_key)
+                # モデル名の自動解決
+                available_models = [m.name for m in genai.list_models()]
+                target_model = 'models/gemini-1.5-flash-latest'
+                if target_model not in available_models:
+                    fallback = next((m for m in available_models if 'gemini-1.5-flash' in m), None)
+                    target_model = fallback if fallback else 'gemini-1.5-flash'
+                
+                self.model = genai.GenerativeModel(target_model)
+            except Exception as e:
+                print(f"FundaAnalyzer Init Error: {e}")
+                self.model = None
         else:
             self.model = None
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-    def analyze(self, symbol: str, yf_news: list, market_context: dict) -> dict:
-        """
-        全ソース（yfinance, Alpha Vantage, FRED, News API, CoinGecko等）を統合分析する
-        """
+    def analyze(self, symbol, news_list, context):
         if not self.model:
-            return {"theme": "NONE", "direction": "NEUTRAL", "reason": "Gemini APIキー未設定"}
+            return {"theme": "Technical Analysis Only", "direction": "NEUTRAL", "rationale": "AI Not Initialized"}
 
-        # コンテキスト情報の整形
-        context_str = json.dumps(market_context, indent=2, ensure_ascii=False)
-        news_summary = "\n".join([f"- {n.get('title', '')}" for n in yf_news[:3]])
+        news_text = "\n".join([f"- {n['title']}" for n in news_list[:5]])
         
         prompt = f"""
-あなたはFX・ゴールド・暗号資産のチーフ・ストラテジストです。
-以下の「7層のデータソース」を統合分析し、現在の相場テーマと、対象銘柄に対する最も合理的な方向感を判定してください。
+市場分析エキスパートとして、{symbol}のファンダメンタルズを15文字以内の「テーマ」と「方向性」で判定してください。
+【ニュース】: {news_text}
+【市場状況】: {context}
 
-【対象銘柄】: {symbol}
-
-【外部指標データ (Technical/Macro/Sentiment)】:
-{context_str}
-
-【主要ニュース要約】:
-{news_summary}
-
-【分析ミッション】
-1. マクロ環境（金利・景気）とセンチメント（恐怖指数等）から、現在が「リスクオン」か「リスクオフ」かを特定せよ。
-2. 対象銘柄のテクニカル指標（Alpha Vantage提供）との整合性を確認せよ。
-3. 総合的な「優位性のある方向（UP/DOWN/NEUTRAL）」と、その「確固たる根拠」を導き出せ。
-
-【出力要件】
-以下のキーを持つ厳密なJSON形式で出力すること。
-- "theme": 相場の支配的テーマ（15文字以内）
-- "direction": 推奨される方向（"UP", "DOWN", "NEUTRAL"）
-- "reason": マクロとテクニカルを統合した論理的な根拠（100文字程度）
+出力形式(JSON):
+{{"theme": "〇〇相場", "direction": "BUY/SELL/NEUTRAL", "rationale": "理由"}}
 """
         try:
             response = self.model.generate_content(prompt)
-            text = response.text.strip()
-            if "```json" in text:
-                text = text.split("```json")[1].split("```")[0].strip()
-            elif "```" in text:
-                text = text.split("```")[1].split("```")[0].strip()
-                
-            result = json.loads(text)
-            return result
+            # 簡易パース
+            text = response.text
+            import json
+            import re
+            match = re.search(r'\{.*\}', text, re.DOTALL)
+            if match:
+                return json.loads(match.group())
+            return {"theme": "Analyzing...", "direction": "NEUTRAL", "rationale": text}
         except Exception as e:
-            print(f"Funda Analysis Error: {e}")
-            return {"theme": "ERROR", "direction": "NEUTRAL", "reason": f"AI分析失敗: {str(e)}"}
+            print(f"Funda Analysis Error for {symbol}: {e}")
+            return {"theme": "Error/Rate Limit", "direction": "NEUTRAL", "rationale": str(e)}

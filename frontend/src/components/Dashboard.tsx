@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import useSWR from "swr";
 import { 
   Activity, AlertTriangle, TrendingUp, DollarSign, BrainCircuit, 
@@ -14,6 +14,7 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
+// スラッシュの重複を防止するサニタイズ
 const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/$/, "");
 
 const SYMBOLS = ["USDJPY", "GOLD", "BTC", "JP225", "XAGUSD", "AUDJPY", "EURUSD", "EURJPY"];
@@ -26,6 +27,11 @@ export default function Dashboard() {
   const isMixedContentLocalhost = typeof window !== "undefined" && 
     window.location.protocol === "https:" && 
     API_URL.startsWith("http://localhost");
+
+  // デバッグ用ログ
+  useEffect(() => {
+    console.log("[ONO] Connecting to API:", API_URL);
+  }, []);
 
   const { data, error, isLoading } = useSWR(isMixedContentLocalhost ? null : `${API_URL}/api/predict`, fetcher, {
     refreshInterval: 10000,
@@ -45,7 +51,7 @@ export default function Dashboard() {
       score: 0,
       ai_text: "分析待機中...",
       tags: [],
-      funda: { theme: "Neural Syncing...", direction: "NEUTRAL" }
+      funda: { theme: "Initializing...", direction: "NEUTRAL" }
     };
   }, [data, activeSymbol]);
 
@@ -77,7 +83,7 @@ export default function Dashboard() {
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-slate-900 flex flex-col font-sans selection:bg-sky-500/30 selection:text-sky-900">
       
-      {/* Header: Sky Blue Accents */}
+      {/* Header: Sky Blue Theme */}
       <header className="sticky top-0 z-50 w-full border-b border-slate-200 bg-white/80 backdrop-blur-2xl p-4 shadow-sm">
         <div className="max-w-7xl mx-auto flex justify-between items-center gap-6">
           <div className="flex items-center gap-3 shrink-0">
@@ -90,7 +96,7 @@ export default function Dashboard() {
           </div>
 
           <div className="flex-1 overflow-x-auto no-scrollbar">
-            <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-2xl border border-slate-200 w-max mx-auto">
+            <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-2xl border border-slate-200 w-max mx-auto shadow-inner">
               {SYMBOLS.map(s => (
                 <button 
                   key={s} 
@@ -108,11 +114,13 @@ export default function Dashboard() {
           <div className="flex items-center gap-4 shrink-0">
             <div className="flex flex-col items-end">
               <span className={`text-[10px] font-black tracking-[0.2em] uppercase ${isConnected ? 'text-sky-500' : 'text-slate-300'}`}>
-                {isConnected ? 'System Live' : 'Offline'}
+                {isConnected ? 'System Live' : 'Connecting'}
               </span>
               <div className="flex items-center gap-1.5 mt-0.5">
                 <span className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-sky-500 animate-pulse' : 'bg-slate-300'}`} />
-                <span className="text-[9px] font-bold text-slate-400 tabular-nums uppercase">Syncing</span>
+                <span className="text-[9px] font-bold text-slate-400 tabular-nums uppercase tracking-widest">
+                  {API_URL.includes("localhost") ? "LOCAL_MODE" : "CLOUD_SYNC"}
+                </span>
               </div>
             </div>
           </div>
@@ -126,8 +134,8 @@ export default function Dashboard() {
         </div>
       </main>
 
-      {/* Footer Nav: Sky Blue Selection */}
-      <nav className="fixed bottom-6 left-1/2 -translate-x-1/2 w-[90%] max-w-lg border border-slate-200 bg-white/90 backdrop-blur-2xl rounded-[32px] p-2 shadow-2xl z-50">
+      {/* Footer Nav: Rounded Light Theme */}
+      <nav className="fixed bottom-6 left-1/2 -translate-x-1/2 w-[90%] max-w-lg border border-slate-200 bg-white/90 backdrop-blur-3xl rounded-[32px] p-2 shadow-2xl z-50">
         <div className="grid grid-cols-4 gap-1">
           <NavButton active={activeTab === "dashboard"} onClick={() => setActiveTab("dashboard")} icon={<LayoutDashboard size={18} />} label="Analyze" />
           <NavButton active={activeTab === "multi"} onClick={() => setActiveTab("multi")} icon={<Globe size={18} />} label="Multi" />
@@ -156,15 +164,15 @@ function DashboardView({ symbol, data, margin, setMargin, riskAmount, recommende
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
       <div className="lg:col-span-2 space-y-8">
-        <Card className={`relative overflow-hidden border-slate-200 bg-white shadow-xl rounded-[32px] ${isIronClad ? 'ring-2 ring-yellow-400' : ''}`}>
-          <div className="absolute -top-20 -right-20 opacity-[0.03] rotate-12 text-sky-500">
+        <Card className={`relative overflow-hidden border-slate-200 bg-white shadow-xl rounded-[32px] ${isIronClad ? 'ring-2 ring-yellow-400 shadow-yellow-100' : ''}`}>
+          <div className="absolute -top-20 -right-20 opacity-[0.05] rotate-12 text-sky-500">
             <BrainCircuit size={400} />
           </div>
           <CardContent className="p-10 relative z-10">
             <div className="flex flex-col md:flex-row items-center justify-between gap-12">
               <div className="space-y-4 text-center md:text-left">
                 <div className="flex items-center justify-center md:justify-start gap-4">
-                  <h2 className="text-[10px] font-black text-slate-400 tracking-[0.3em] uppercase">{symbol} Edge</h2>
+                  <h2 className="text-[10px] font-black text-slate-400 tracking-[0.3em] uppercase">{symbol} Insight</h2>
                   <Badge className={`${
                     data?.status?.includes('Start') ? 'bg-sky-100 text-sky-600' : 
                     data?.status?.includes('Standby') ? 'bg-yellow-100 text-yellow-700' : 
@@ -220,7 +228,7 @@ function DashboardView({ symbol, data, margin, setMargin, riskAmount, recommende
               ) : (
                 <div className="flex flex-col items-center justify-center py-40 text-slate-200 space-y-6">
                   <Activity size={80} className="animate-pulse text-sky-100" />
-                  <p className="font-black tracking-[0.5em] text-[10px] uppercase text-slate-300">Neural Syncing {symbol}...</p>
+                  <p className="font-black tracking-[0.5em] text-[10px] uppercase text-slate-300">Neural Syncing for {symbol}...</p>
                 </div>
               )}
             </ScrollArea>
@@ -232,13 +240,13 @@ function DashboardView({ symbol, data, margin, setMargin, riskAmount, recommende
         <Card className="border-slate-200 bg-white overflow-hidden shadow-xl rounded-[32px]">
           <CardHeader className="pb-6 border-b border-slate-50">
             <CardTitle className="text-[10px] font-black uppercase tracking-[0.4em] flex items-center gap-3 text-slate-400">
-              <DollarSign className="w-4 h-4 text-sky-500" />Risk Management
+              <DollarSign className="w-4 h-4 text-sky-500" />Risk Engine
             </CardTitle>
           </CardHeader>
           <CardContent className="pt-8 space-y-8">
             <div className="space-y-4">
-              <Label className="text-[9px] font-black uppercase tracking-[0.3em] text-slate-400">Margin (JPY)</Label>
-              <Input type="number" value={margin} onChange={(e) => setMargin(Number(e.target.value))} className="bg-slate-50 border-slate-200 font-black text-2xl h-16 rounded-2xl focus:ring-sky-500 focus:border-sky-500" />
+              <Label className="text-[9px] font-black uppercase tracking-[0.3em] text-slate-400">Capital Margin (JPY)</Label>
+              <Input type="number" value={margin} onChange={(e) => setMargin(Number(e.target.value))} className="bg-slate-50 border-slate-200 font-black text-2xl h-16 rounded-2xl focus:ring-sky-500" />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="bg-sky-50 p-5 rounded-[24px] border border-sky-100">
@@ -246,29 +254,19 @@ function DashboardView({ symbol, data, margin, setMargin, riskAmount, recommende
                 <p className="text-3xl font-black text-sky-700">{recommendedRiskPercent}%</p>
               </div>
               <div className="bg-yellow-50 p-5 rounded-[24px] border border-yellow-100">
-                <p className="text-[8px] font-black uppercase tracking-widest text-yellow-700 mb-2">Safety Buffer</p>
+                <p className="text-[8px] font-black uppercase tracking-widest text-yellow-700 mb-2">Buffer Limit</p>
                 <p className="text-2xl font-black text-yellow-800 tabular-nums">¥{Math.floor(riskAmount).toLocaleString()}</p>
               </div>
             </div>
             <Separator className="bg-slate-100" />
             <div className="bg-emerald-50 p-6 rounded-[24px] border border-emerald-100 flex justify-between items-center shadow-sm">
               <div>
-                <p className="text-[8px] font-black uppercase tracking-widest text-emerald-600 mb-1">Target Profit</p>
+                <p className="text-[8px] font-black uppercase tracking-widest text-emerald-600 mb-1">Target Gain</p>
                 <p className="text-2xl font-black text-emerald-700">+¥{Math.floor(riskAmount * 2.5).toLocaleString()}</p>
               </div>
               <TrendingUp size={24} className="text-emerald-500" />
             </div>
           </CardContent>
-        </Card>
-        
-        <Card className="border-slate-200 bg-white p-8 shadow-xl rounded-[32px] flex items-center gap-6">
-          <div className="bg-sky-50 p-4 rounded-2xl">
-            <Activity className="w-8 h-8 text-sky-500 animate-pulse" />
-          </div>
-          <div className="space-y-1">
-            <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Network Stream</p>
-            <p className="text-xs font-bold text-slate-700">Connected to {symbol}</p>
-          </div>
         </Card>
       </div>
     </div>
@@ -293,7 +291,7 @@ function MultiAssetView({ allData, setActiveSymbol }: any) {
                 <span className={`text-6xl font-black tracking-tighter tabular-nums ${score >= 80 ? 'text-sky-500' : 'text-slate-900'}`}>{score}</span>
                 <span className="text-2xl font-black text-slate-200">%</span>
               </div>
-              <div className="text-[9px] font-black text-slate-300 border-t border-slate-50 pt-4 uppercase tracking-[0.2em] truncate group-hover:text-slate-500">
+              <div className="text-[9px] font-black text-slate-300 border-t border-slate-50 pt-4 uppercase tracking-[0.2em] truncate">
                 {d?.funda?.theme || 'Analyzing...'}
               </div>
             </CardContent>
@@ -309,20 +307,20 @@ function CorrelationView({ overview }: any) {
     <div className="space-y-12 animate-in zoom-in-95 duration-1000 py-10 max-w-5xl mx-auto">
       <div className="text-center space-y-4 mb-16">
         <div className="bg-sky-50 w-24 h-24 rounded-[48px] flex items-center justify-center mx-auto mb-8 shadow-inner shadow-sky-100"><Link2 className="text-sky-500 w-12 h-12" /></div>
-        <h2 className="text-6xl font-black tracking-tighter text-slate-900 uppercase">Market Intelligence</h2>
-        <p className="text-slate-400 text-xl font-medium tracking-tight">Cross-Asset Correlation & Sentiment Matrix</p>
+        <h2 className="text-6xl font-black tracking-tighter text-slate-900 uppercase">Market Matrix</h2>
+        <p className="text-slate-400 text-xl font-medium tracking-tight">Cross-Asset Sentiment & Macro Analytics</p>
       </div>
       
       <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
         <Card className="border-slate-200 bg-white p-12 rounded-[48px] shadow-xl">
-          <h3 className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-400 mb-10 flex items-center gap-3"><Zap className="text-yellow-500" />Global Sentiment</h3>
+          <h3 className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-400 mb-10 flex items-center gap-3"><Zap className="text-yellow-500" />Sentiment Core</h3>
           <div className="space-y-8">
             <div className="bg-slate-50 p-10 rounded-[32px] border border-slate-100 text-center shadow-inner">
-              <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-4">Fear & Greed Index</p>
+              <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-4">Fear & Greed</p>
               <p className="text-7xl font-black text-sky-600 tabular-nums">{overview.fear_greed}</p>
             </div>
             <div className="bg-white p-10 rounded-[32px] border border-slate-100 shadow-sm">
-              <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-4">Dominant Theme</p>
+              <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-4">Global Trend</p>
               <p className="text-2xl font-bold text-slate-800 leading-relaxed tracking-tight">{overview.global_theme}</p>
             </div>
           </div>
@@ -330,8 +328,8 @@ function CorrelationView({ overview }: any) {
         
         <Card className="border-slate-200 bg-white p-12 rounded-[48px] flex flex-col items-center justify-center text-center shadow-xl border-dashed border-2">
           <Activity size={64} className="text-sky-200 mb-8 animate-pulse" />
-          <p className="text-sm font-black uppercase tracking-[0.4em] text-slate-300">Macro Feed Synthesis</p>
-          <p className="text-xs text-slate-400 mt-6 max-w-[250px] leading-relaxed">FRED, Alpha Vantage, and News API integration in progress.</p>
+          <p className="text-sm font-black uppercase tracking-[0.4em] text-slate-300">Macro Stream Sync</p>
+          <p className="text-xs text-slate-400 mt-6 max-w-[250px] leading-relaxed">FRED & Alpha Vantage data flow active.</p>
         </Card>
       </div>
     </div>
