@@ -3,22 +3,19 @@ import os
 import json
 import time
 import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-from ono_estimator.core import ONOPredictionEngine, SignalStatus
-from ono_estimator.core.connector import YFinanceConnector
+from ono_estimator.core.hybrid_fetcher import HybridDataFetcher
 from ono_estimator.core.ai_analyzer import GeminiAnalyzer
 from ono_estimator.core.funda_analyzer import FundaAnalyzer
-from ono_estimator.core.notifier import Notifier
-from ono_estimator.core.market_context import MarketContextFetcher
+from ono_estimator.core import ONOPredictionEngine, SignalStatus
 
 load_dotenv()
 
-app = FastAPI(title="ONO Estimator Pro v3.0", version="3.0.0")
+app = FastAPI(title="ONO Estimator Ultra v4.0", version="4.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -27,125 +24,78 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 監視銘柄
 target_symbols = ["USDJPY", "GOLD", "BTC", "JP225", "XAGUSD", "AUDJPY", "EURUSD", "EURJPY"]
 
 # グローバルステート
-system_state = {sym: {"status": "Wait", "score": 0, "ai_text": "Analyzing...", "funda": {}} for sym in target_symbols}
+system_state = {sym: {"status": "Wait", "score": 0, "ai_text": "Syncing...", "funda": {}} for sym in target_symbols}
 chart_data = {sym: [] for sym in target_symbols}
-market_overview = {"fear_greed": "50", "global_theme": "Analyzing..."}
-
-def calculate_zigzag(df, deviation=0.5):
-    """簡易ZigZag計算"""
-    closes = df['close'].values
-    zigzag = []
-    # 簡易実装: 高値安値を結ぶ（ここではcloseベース）
-    for i in range(len(closes)):
-        if i == 0 or i == len(closes)-1:
-            zigzag.append({"time": int(df.index[i].timestamp()), "value": float(closes[i])})
-        elif i % 10 == 0: # 10本に1回頂点を作る簡易モック
-            zigzag.append({"time": int(df.index[i].timestamp()), "value": float(closes[i])})
-    return zigzag
-
-def calculate_indicators(df):
-    """テクニカル指標の計算"""
-    # MA
-    df['ma25'] = df['close'].rolling(25).mean()
-    df['ma75'] = df['close'].rolling(75).mean()
-    df['ma200'] = df['close'].rolling(200).mean()
-    
-    # Bollinger Bands (2σ)
-    std = df['close'].rolling(20).std()
-    df['bb_upper'] = df['ma25'] + (std * 2)
-    df['bb_lower'] = df['ma25'] - (std * 2)
-    
-    # RSI
-    delta = df['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    rs = gain / loss
-    df['rsi'] = 100 - (100 / (1 + rs))
-    
-    # MACD
-    exp1 = df['close'].ewm(span=12, adjust=False).mean()
-    exp2 = df['close'].ewm(span=26, adjust=False).mean()
-    df['macd'] = exp1 - exp2
-    df['signal'] = df['macd'].ewm(span=9, adjust=False).mean()
-    df['histogram'] = df['macd'] - df['signal']
-    
-    return df.fillna(0)
+market_overview = {"fear_greed": "50", "global_theme": "Analyzing Global Synergy..."}
 
 async def estimation_loop():
-    connector = YFinanceConnector()
+    fetcher = HybridDataFetcher()
     engine = ONOPredictionEngine()
     ai_analyzer = GeminiAnalyzer()
     funda_analyzer = FundaAnalyzer()
-    context_fetcher = MarketContextFetcher()
-    notifier = Notifier()
     
     while True:
         try:
-            # マクロ情報の更新
-            global_ctx = context_fetcher.fetch_all("GLOBAL")
-            market_overview["fear_greed"] = global_ctx.get("fear_greed", "50")
-            market_overview["global_theme"] = global_ctx.get("theme", "Range Market")
-
+            batch_metrics = {}
+            
             for symbol in target_symbols:
                 try:
-                    await asyncio.sleep(3) # レート制限対策
+                    # 1. 冗長化されたデータ取得
+                    df = fetcher.fetch_ohlcv(symbol)
+                    if df is None: continue
                     
-                    # 1. データ取得
-                    mtf_data = connector.fetch_mtf_data(symbol)
-                    if not mtf_data: continue
+                    # 2. 指標計算
+                    df = fetcher.calculate_indicators(df)
                     
-                    df_m5 = mtf_data.get_data("5m")
-                    if df_m5 is None: continue
+                    # 3. テクニカル判定
+                    result = engine.analyze(None, symbol=symbol, df_precomputed=df)
                     
-                    # 2. チャート指標計算
-                    df_full = calculate_indicators(df_m5)
+                    # AI分析用の指標サマリーを作成
+                    latest = df.iloc[-1]
+                    batch_metrics[symbol] = {
+                        "status": result.status.value,
+                        "score": result.win_rate_score,
+                        "rsi": round(latest['rsi'], 1),
+                        "macd": round(latest['macd'], 4),
+                        "theme": "Stable" # Funda分析を統合可能
+                    }
                     
-                    # フロントエンド用のチャートデータ生成 (最新100件)
+                    # チャートデータの更新
                     records = []
-                    for idx, row in df_full.tail(100).iterrows():
+                    for idx, row in df.tail(100).iterrows():
                         records.append({
                             "time": int(idx.timestamp()),
-                            "open": float(row['open']),
-                            "high": float(row['high']),
-                            "low": float(row['low']),
-                            "close": float(row['close']),
-                            "ma25": float(row['ma25']),
-                            "ma75": float(row['ma75']),
-                            "bb_upper": float(row['bb_upper']),
-                            "bb_lower": float(row['bb_lower']),
-                            "rsi": float(row['rsi']),
-                            "macd": float(row['macd']),
-                            "signal": float(row['signal']),
-                            "hist": float(row['histogram'])
+                            "open": row['open'], "high": row['high'], "low": row['low'], "close": row['close'],
+                            "ma25": row['ma25'], "bb_upper": row['bb_upper'], "bb_lower": row['bb_lower'],
+                            "rsi": row['rsi'], "macd": row['macd'], "hist": row['hist']
                         })
                     chart_data[symbol] = records
                     
-                    # 3. 分析実行
-                    await asyncio.sleep(2) # Gemini 429 回避
-                    funda_info = funda_analyzer.analyze(symbol, [], global_ctx)
-                    result = engine.analyze(mtf_data, symbol=symbol, funda_info=funda_info)
-                    
-                    ai_text = ai_analyzer.analyze(result, symbol)
-                    
-                    system_state[symbol] = {
-                        "status": result.status.value,
-                        "score": result.win_rate_score,
-                        "ai_text": ai_text,
-                        "funda": funda_info,
-                        "zigzag": calculate_zigzag(df_full.tail(100)),
-                        "last_updated": datetime.now().isoformat()
-                    }
-                    
-                    print(f"Sync Complete: {symbol} @ {result.win_rate_score}%")
-                    
                 except Exception as e:
-                    print(f"Error Syncing {symbol}: {e}")
-                    
-            await asyncio.sleep(300) # 5分おきに全銘柄同期
+                    print(f"[Loop] Error on {symbol}: {e}")
+                
+                await asyncio.sleep(1) # API制限に配慮
+
+            # 4. 一括 AI 分析 (1リクエストで8銘柄)
+            if batch_metrics:
+                ai_results = ai_analyzer.batch_analyze(batch_metrics)
+                market_overview["global_theme"] = ai_results.get("market_intelligence", "Stable Correlation")
+                
+                for sym in target_symbols:
+                    if sym in ai_results:
+                        system_state[sym].update({
+                            "status": batch_metrics[sym]["status"],
+                            "score": batch_metrics[sym]["score"],
+                            "ai_text": ai_results[sym]["ai_text"],
+                            "last_updated": datetime.now().isoformat()
+                        })
+
+            print(f"--- Batch Sync Complete: {datetime.now().isoformat()} ---")
+            await asyncio.sleep(300) # 5分おき
+            
         except Exception as e:
             print(f"Critical Loop Error: {e}")
             await asyncio.sleep(60)
