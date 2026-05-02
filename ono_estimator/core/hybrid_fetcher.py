@@ -44,8 +44,10 @@ class HybridDataFetcher:
             except Exception as e:
                 print(f"[Tiingo] Error: {e}")
 
-        # 3. yfinance (Fallback)
+        # 3. yfinance (Fallback) - 最も厳しい制限があるため最後に実行
         try:
+            print(f"[yfinance] Falling back for {symbol}...")
+            time.sleep(2) # 強制待機
             ticker = yf.Ticker(symbol if "/" not in symbol else symbol.replace("/", ""))
             df = ticker.history(period="1d", interval="5m")
             if not df.empty:

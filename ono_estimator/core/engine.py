@@ -17,9 +17,21 @@ class ONOPredictionEngine:
         self.trigger_filter = TriggerFilter()
         self.pattern_matcher = IronPatternMatcher()
 
-    def analyze(self, mtf_data: MTFData, symbol: str, funda_info: dict = None) -> PredictionResult:
+    def analyze(self, mtf_data: MTFData = None, symbol: str = "USDJPY", funda_info: dict = None, df_precomputed: pd.DataFrame = None) -> PredictionResult:
         result = PredictionResult()
         
+        # mtf_data がなく、計算済みデータがある場合はモック作成（または簡易判定へ移行）
+        if mtf_data is None and df_precomputed is not None:
+            # 簡易判定ロジック（df_precomputedを使用）
+            latest = df_precomputed.iloc[-1]
+            result.win_rate_score = 50 # デフォルト
+            if latest['rsi'] > 50: result.win_rate_score += 10
+            if latest['macd'] > 0: result.win_rate_score += 10
+            result.status = SignalStatus.STANDBY
+            result.rationale_a = "【Ultra Engine】一括計算データに基づき分析完了。"
+            result.rationale_b = f"RSI: {latest['rsi']:.1f} / MACD: {latest['macd']:.4f}"
+            return result
+
         if funda_info is None:
             funda_info = {"direction": "NEUTRAL", "reason": "No funda data"}
         

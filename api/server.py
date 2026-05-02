@@ -77,7 +77,7 @@ async def estimation_loop():
                 except Exception as e:
                     print(f"[Loop] Error on {symbol}: {e}")
                 
-                await asyncio.sleep(1) # API制限に配慮
+                await asyncio.sleep(2) # API制限に配慮（強化）
 
             # 4. 一括 AI 分析 (1リクエストで8銘柄)
             if batch_metrics:
@@ -103,6 +103,10 @@ async def estimation_loop():
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(estimation_loop())
+
+@app.get("/")
+def read_root():
+    return {"message": "ONO Estimator Ultra API is running", "status": "active", "version": "4.1.0"}
 
 @app.get("/api/predict")
 def get_prediction():
