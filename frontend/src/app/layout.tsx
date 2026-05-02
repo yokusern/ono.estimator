@@ -12,6 +12,10 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+export const metadata: Metadata = {
+  title: "ONO Estimator Pro",
+  description: "24h Autonomous Multi-Timeframe Investment Intelligence",
+};
 
 export default function RootLayout({
   children,
