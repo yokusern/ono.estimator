@@ -29,21 +29,23 @@ class GeminiAnalyzer:
             mtf = data.get("mtf", {})
             prompt = f"""
 Return ONLY a raw JSON object.
-As a world-class FX mentor & strategist, analyze this asset: {symbol}
+As an elite investment coach & top-tier quantitative strategist, provide a 200-300 character analysis for: {symbol}
 
 [Market Data]
-- Short-term (1m): Score={mtf.get('1m', {}).get('score')}, RSI={mtf.get('1m', {}).get('rsi')}
-- Long-term (1h): Score={mtf.get('1h', {}).get('score')}, Theme={mtf.get('1h', {}).get('theme')}
+- Short (1m): Score={mtf.get('1m', {}).get('score')}, RSI={mtf.get('1m', {}).get('rsi')}
+- Long (1h): Score={mtf.get('1h', {}).get('score')}, Theme={mtf.get('1h', {}).get('theme')}
 
-[Educational Requirement]
-In the "ai_text" field, write a professional strategy (approx. 200 Japanese characters) that includes:
-1. "Why": Explain the pattern (e.g., 'Double bottom forming, good for dip buying').
-2. "History": Compare with past similar volatility (e.g., 'Similar to the BTC crash of 2021').
-3. "Action": End with a clear recommendation: "【推奨アクション】XXX".
+[Coaching Requirement]
+1. Logic: Explain the 'Why' using professional terms (e.g., Fakeouts, Support-Resistance Flip).
+2. History: Compare current metrics to historical market cycles (e.g., 'Similar to the 2008 crash structure' or '2021 bull run momentum').
+3. Strategy Plan: Provide the following 3-item set clearly:
+   - Recommended Entry
+   - Take Profit (Target)
+   - Stop Loss (Cut)
 
 JSON Format:
 {{
-  "ai_text": "分析内容＋過去比較＋推奨アクション（日本語200文字程度）",
+  "ai_text": "【論理解説】... \n【歴史比較】... \n【戦略】Entry:XXX / TP:XXX / SL:XXX",
   "predicted_price": 0.0,
   "probability": 0
 }}
