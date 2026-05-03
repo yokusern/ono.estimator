@@ -123,27 +123,63 @@ class GeminiAnalyzer:
         self._rate_limit()
         return self.model.generate_content(prompt)
 
-    def _call_with_failover(self, prompt: str, max_attempts: int = 6):
-        """ResourceExhausted → 自動キーローテーション"""
-        for attempt in range(max_attempts):
+    def _extract_retry_after(self, err_str: str) -> float:
+        """Retry-Afterヘッダーから待機秒数を抽出"""
+        import re as _re
+        m = _re.search(r'retry.?after[:\s]+(\d+)', err_str, _re.IGNORECASE)
+        return float(m.group(1)) if m else 0.0
+
+    def _call_with_failover(self, prompt: str, max_attempts: int = 4):
+        """エラー種別ごとのリトライ戦略:
+        - 404/モデル不存在 → 即次モデルへフォールバック (リトライなし)
+        - 429/ResourceExhausted → Retry-After待機後、次のAPIキーへ
+        - 500系/ネットワーク → 指数バックオフ最大3回
+        """
+        network_retries = 0
+        attempt = 0
+        while attempt < max_attempts:
             if not self.model:
                 return None
             try:
                 return self._call_api_inner(prompt)
             except Exception as e:
                 err_str = str(e).lower()
-                if "resource_exhausted" in err_str or "429" in err_str or "quota" in err_str:
-                    print(f"[Gemini] Exhausted (attempt {attempt+1}): rotating key")
+                raw_err = str(e)
+
+                # ── 404: モデル不存在 → 即フォールバック (リトライ不要) ──
+                if "404" in err_str or "not found" in err_str or "model" in err_str and "not" in err_str:
+                    print(f"[Gemini] 404 model error → fallback model: {raw_err[:80]}")
+                    self._rotate_key("ModelNotFound")
+                    attempt += 1
+                    continue
+
+                # ── 429: レート制限 → Retry-After待機 → キーローテーション ──
+                elif "resource_exhausted" in err_str or "429" in err_str or "quota" in err_str:
+                    wait = self._extract_retry_after(raw_err) or (2 ** attempt)
+                    wait = min(wait, 60)
+                    print(f"[Gemini] 429 exhausted → wait {wait:.0f}s → rotating key")
+                    time.sleep(wait)
                     self._rotate_key("ResourceExhausted")
                     if not self.model:
                         return None
-                    time.sleep(2 ** attempt)
-                elif "invalid_argument" in err_str or "400" in err_str:
-                    logger.warning(f"[Gemini] Invalid request: {e}")
+                    attempt += 1
+
+                # ── 400: 不正リクエスト → リトライ不要 ──
+                elif "400" in err_str or "invalid_argument" in err_str:
+                    logger.warning(f"[Gemini] 400 invalid request (no retry): {raw_err[:80]}")
                     return None
+
+                # ── 500系/ネットワーク → 指数バックオフ 最大3回 ──
                 else:
-                    logger.warning(f"[Gemini] API error (attempt {attempt+1}): {e}")
-                    time.sleep(min(30, 2 ** attempt))
+                    network_retries += 1
+                    if network_retries > 3:
+                        logger.warning(f"[Gemini] Network error exceeded 3 retries: {raw_err[:80]}")
+                        return None
+                    wait = 2 ** (network_retries - 1)  # 1s, 2s, 4s
+                    logger.warning(f"[Gemini] Network error (retry {network_retries}/3) wait {wait}s: {raw_err[:80]}")
+                    time.sleep(wait)
+                    attempt += 1
+
         return None
 
     def _parse_e3(self, text: str) -> Optional[dict]:

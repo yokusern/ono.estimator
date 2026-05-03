@@ -309,10 +309,18 @@ function NotificationPreview({ symbol, d }: { symbol: string; d: any }) {
 export default function Dashboard() {
   const [activeSymbol, setActiveSymbol] = useState("USDJPY");
   const [activeTF, setActiveTF] = useState("1h");
-  const [activeTab, setActiveTab] = useState<"main"|"multi"|"history"|"ai">("main");
+  const [activeTab, setActiveTab] = useState<"main"|"multi"|"history"|"ai"|"debug">("main");
   const [margin, setMargin] = useState("1000000");
   const [session, setSession] = useState(getCurrentSession());
   const [showInfo, setShowInfo] = useState(false);
+
+  // URLパラメータ ?debug=1 でデバッグタブを有効化
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("debug") === "1") setActiveTab("debug");
+    }
+  }, []);
 
   useEffect(() => {
     const t = setInterval(() => setSession(getCurrentSession()), 60000);
@@ -347,6 +355,10 @@ export default function Dashboard() {
   const { data: dailyRaw } = useSWR(
     `${API_URL}/api/daily/status`, fetcher,
     { ...swrOpts, refreshInterval: 60000 }
+  );
+  const { data: sysStatusRaw } = useSWR(
+    activeTab === "debug" ? `${API_URL}/api/system/status` : null, fetcher,
+    { ...swrOpts, refreshInterval: 15000 }
   );
 
   const isConnected = !error && !isLoading;
@@ -501,6 +513,7 @@ export default function Dashboard() {
           { id: "multi",   label: "全銘柄",    icon: <Globe size={14} /> },
           { id: "history", label: "パフォーマンス", icon: <Trophy size={14} /> },
           { id: "ai",      label: "AI分析",    icon: <Brain size={14} /> },
+          { id: "debug",   label: "診断",      icon: <Activity size={14} /> },
         ] as const).map(({ id, label, icon }) => (
           <button key={id} onClick={() => setActiveTab(id)} style={{
             background: activeTab === id ? "rgba(34,211,238,0.1)" : "transparent",
@@ -998,6 +1011,118 @@ export default function Dashboard() {
                 )}
               </div>
             </div>
+          </div>
+        )}
+
+        {/* ══════════ TAB: DEBUG ══════════ */}
+        {activeTab === "debug" && (
+          <div>
+            <div style={{ fontSize: 20, fontWeight: 800, color: "#f1f5f9", marginBottom: 6 }}>
+              システム自己診断
+            </div>
+            <div style={{ fontSize: 12, color: "#4b5563", marginBottom: 20 }}>
+              ?debug=1 でアクセス可能 — {new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" })}
+            </div>
+
+            {!sysStatusRaw ? (
+              <div style={{ color: "#374151", textAlign: "center", padding: 40 }}>
+                <RefreshCw size={32} style={{ margin: "0 auto 12px", animation: "spin 1s linear infinite", color: "#1e293b" }} />
+                <div>診断データ取得中...</div>
+              </div>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 14 }}>
+
+                {/* Gemini状態 */}
+                <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 14, padding: 18 }}>
+                  <div style={{ fontSize: 12, color: "#a78bfa", fontWeight: 700, marginBottom: 12 }}>🤖 Gemini AI</div>
+                  {[
+                    ["状態", sysStatusRaw.gemini?.ai_active ? "✅ 動作中" : "❌ 停止"],
+                    ["使用モデル", sysStatusRaw.gemini?.current_model],
+                    ["キー数", `${sysStatusRaw.gemini?.keys_configured}本`],
+                    ["現在キー", `#${(sysStatusRaw.gemini?.current_key_index ?? 0) + 1}`],
+                    ["フォールバック", `Lv.${sysStatusRaw.gemini?.model_fallback_level}`],
+                    ["直近1分コール数", `${sysStatusRaw.gemini?.calls_last_minute}回`],
+                  ].map(([label, val]) => (
+                    <div key={label as string} style={{ display: "flex", justifyContent: "space-between", marginBottom: 8, fontSize: 12 }}>
+                      <span style={{ color: "#64748b" }}>{label}</span>
+                      <span style={{ color: "#e2e8f0", fontFamily: "monospace" }}>{val ?? "---"}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Supabase状態 */}
+                <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 14, padding: 18 }}>
+                  <div style={{ fontSize: 12, color: "#34d399", fontWeight: 700, marginBottom: 12 }}>🗄️ Supabase</div>
+                  <div style={{ marginBottom: 8, fontSize: 12 }}>
+                    <span style={{ color: "#64748b" }}>接続</span>
+                    <span style={{ float: "right", color: sysStatusRaw.supabase?.connected ? "#34d399" : "#fb7185" }}>
+                      {sysStatusRaw.supabase?.connected ? "✅ 接続中" : "❌ 未接続"}
+                    </span>
+                  </div>
+                  {Object.entries(sysStatusRaw.supabase?.table_counts || {}).map(([tbl, count]) => (
+                    <div key={tbl} style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, fontSize: 11 }}>
+                      <span style={{ color: "#64748b" }}>{tbl}</span>
+                      <span style={{ color: "#94a3b8", fontFamily: "monospace" }}>
+                        {count === -1 ? "エラー" : `${count}行`}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* マーケット状態 */}
+                <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 14, padding: 18 }}>
+                  <div style={{ fontSize: 12, color: "#f59e0b", fontWeight: 700, marginBottom: 12 }}>📊 マーケット</div>
+                  {[
+                    ["モード", sysStatusRaw.market?.mode],
+                    ["ウォームアップ", sysStatusRaw.warmup_done ? "✅ 完了" : "⏳ 待機中"],
+                    ["起動", sysStatusRaw.startup_done ? "✅ 完了" : "⏳ 起動中"],
+                    ["最終更新", sysStatusRaw.market?.last_update_ago_sec != null ? `${Math.floor(sysStatusRaw.market.last_update_ago_sec)}秒前` : "---"],
+                  ].map(([label, val]) => (
+                    <div key={label as string} style={{ display: "flex", justifyContent: "space-between", marginBottom: 8, fontSize: 12 }}>
+                      <span style={{ color: "#64748b" }}>{label}</span>
+                      <span style={{ color: "#e2e8f0" }}>{val ?? "---"}</span>
+                    </div>
+                  ))}
+                  <div style={{ marginTop: 10, fontSize: 11, color: "#4b5563" }}>現在価格:</div>
+                  {Object.entries(sysStatusRaw.market?.prices || {}).map(([sym, price]) => (
+                    <div key={sym} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginTop: 4 }}>
+                      <span style={{ color: "#64748b" }}>{sym}</span>
+                      <span style={{ color: "#94a3b8", fontFamily: "monospace" }}>{String(price)}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* パフォーマンス */}
+                <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 14, padding: 18 }}>
+                  <div style={{ fontSize: 12, color: "#22d3ee", fontWeight: 700, marginBottom: 12 }}>🏆 パフォーマンス</div>
+                  {[
+                    ["勝率", `${sysStatusRaw.performance?.win_rate ?? 0}%`],
+                    ["総トレード", `${sysStatusRaw.performance?.total_trades ?? 0}件`],
+                    ["日次ロック", sysStatusRaw.performance?.daily_locked ? "🔒 停止中" : "🟢 稼働中"],
+                    ["本日シグナル", `${sysStatusRaw.performance?.today_signals?.total ?? 0}件`],
+                    ["BUY", `${sysStatusRaw.performance?.today_signals?.buy ?? 0}件`],
+                    ["SELL", `${sysStatusRaw.performance?.today_signals?.sell ?? 0}件`],
+                  ].map(([label, val]) => (
+                    <div key={label as string} style={{ display: "flex", justifyContent: "space-between", marginBottom: 8, fontSize: 12 }}>
+                      <span style={{ color: "#64748b" }}>{label}</span>
+                      <span style={{ color: "#e2e8f0" }}>{val}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* モジュール状態 */}
+                <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 14, padding: 18 }}>
+                  <div style={{ fontSize: 12, color: "#64748b", fontWeight: 700, marginBottom: 12 }}>⚙️ モジュール</div>
+                  {Object.entries(sysStatusRaw.modules || {}).map(([mod, active]) => (
+                    <div key={mod} style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, fontSize: 11 }}>
+                      <span style={{ color: "#64748b" }}>{mod}</span>
+                      <span style={{ color: active ? "#34d399" : "#fb7185" }}>{active ? "✅" : "❌"}</span>
+                    </div>
+                  ))}
+                </div>
+
+              </div>
+            )}
           </div>
         )}
       </div>

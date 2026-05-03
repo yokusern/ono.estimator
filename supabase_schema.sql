@@ -111,6 +111,31 @@ CREATE TABLE notification_logs (
 CREATE INDEX idx_notif_symbol ON notification_logs(symbol);
 CREATE INDEX idx_notif_notified_at ON notification_logs(notified_at DESC);
 
+-- ─── 7. active_signals（アクティブシグナル管理・TP/SL追跡）────
+DROP TABLE IF EXISTS active_signals CASCADE;
+
+CREATE TABLE active_signals (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    symbol       TEXT NOT NULL,
+    timeframe    TEXT DEFAULT '1h',
+    direction    TEXT CHECK (direction IN ('BUY','SELL','WAIT')),
+    confidence   FLOAT DEFAULT 0,
+    entry        FLOAT,
+    tp1          FLOAT,
+    tp2          FLOAT,
+    sl           FLOAT,
+    layer_scores JSONB DEFAULT '{}',
+    status       TEXT DEFAULT 'ACTIVE'
+                     CHECK (status IN ('ACTIVE','TP1','TP2','SL','EXPIRED','CANCELLED')),
+    notified_at  TIMESTAMPTZ DEFAULT NOW(),
+    created_at   TIMESTAMPTZ DEFAULT NOW(),
+    closed_at    TIMESTAMPTZ
+);
+
+CREATE INDEX idx_active_symbol     ON active_signals(symbol);
+CREATE INDEX idx_active_status     ON active_signals(status);
+CREATE INDEX idx_active_created_at ON active_signals(created_at DESC);
+
 -- ─── RLS設定 ─────────────────────────────────────────────────
 ALTER TABLE predictions       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE market_snapshots  ENABLE ROW LEVEL SECURITY;
@@ -118,6 +143,7 @@ ALTER TABLE performance_log   ENABLE ROW LEVEL SECURITY;
 ALTER TABLE system_health     ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ai_memory         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE notification_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE active_signals    ENABLE ROW LEVEL SECURITY;
 
 -- Service Roleからのフルアクセスポリシー
 CREATE POLICY "service_full_access" ON predictions       FOR ALL USING (true) WITH CHECK (true);
@@ -126,6 +152,7 @@ CREATE POLICY "service_full_access" ON performance_log   FOR ALL USING (true) WI
 CREATE POLICY "service_full_access" ON system_health     FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "service_full_access" ON ai_memory         FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "service_full_access" ON notification_logs FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "service_full_access" ON active_signals    FOR ALL USING (true) WITH CHECK (true);
 
 -- ─── PostgRESTスキーマキャッシュリロード ──────────────────────
 NOTIFY pgrst, 'reload schema';

@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 
 # ─── Core modules ──────────────────────────────────────────────
 from ono_estimator.core.hybrid_fetcher import HybridDataFetcher
-from ono_estimator.core.ai_analyzer import GeminiAnalyzer
+from ono_estimator.core.ai_analyzer import GeminiAnalyzer, MODEL_FALLBACK_ORDER
 from ono_estimator.core.database import SupabaseClient
 from ono_estimator.core.notifier import Notifier
 
@@ -593,8 +593,40 @@ async def auto_evaluate_loop():
         await asyncio.sleep(3600)  # 1時間毎
 
 
+_warmup_done = False
+_warmup_ts: float = 0.0
+_last_ai_success: float = 0.0
+
+
+async def warmup_loop():
+    """スピンアップ直後にUSDJPY/1hを先読みしてキャッシュを温める"""
+    global _warmup_done, _warmup_ts
+    await asyncio.sleep(5)
+    try:
+        loop = asyncio.get_event_loop()
+        warmup_sym = "USDJPY=X"
+        print("[Warmup] Preloading USDJPY/1h...")
+        df = await loop.run_in_executor(None, lambda: fetcher.get_analysis_df(warmup_sym, "1h"))
+        if df is not None and not df.empty:
+            chart = await loop.run_in_executor(None, lambda: fetcher.get_chart_data(warmup_sym, "1h"))
+            chart_cache[warmup_sym]["1h"] = chart or []
+            price = float(df.iloc[-1]["close"])
+            price_cache[warmup_sym] = price
+            system_state[warmup_sym]["1h"]["status"] = "Warm"
+            system_state[warmup_sym]["1h"]["price"] = price
+            _warmup_ts = time.time()
+            print(f"[Warmup] ✅ USDJPY={price:.3f} ({len(df)} bars cached)")
+        else:
+            print("[Warmup] No data returned")
+    except Exception as e:
+        print(f"[Warmup] Error: {e}")
+    finally:
+        _warmup_done = True
+
+
 @app.on_event("startup")
 async def startup():
+    asyncio.create_task(warmup_loop())       # 最優先: スピンアップ直後にキャッシュ温め
     asyncio.create_task(estimation_loop())
     asyncio.create_task(backtest_loop())
     asyncio.create_task(trade_monitor_loop())
@@ -612,14 +644,19 @@ def root():
 
 @app.get("/api/health")
 def health():
+    # 超軽量: DB接続なし・即時応答 (Renderスピンアップ監視用)
+    return {"status": "ok", "ts": int(time.time())}
+
+
+@app.get("/api/status")
+def status():
+    # 詳細ステータス (内部確認用)
     return {
-        "status": "healthy", "version": "6.1.0",
+        "status": "healthy", "version": "6.3.0",
         "engine_v2": _V2,
         "mode": market_overview.get("mode", "starting"),
         "gemini_calls_last_min": len(_gemini_times),
         "last_sync": market_overview["last_update_ts"],
-        "performance": market_overview.get("performance", ""),
-        "data_summary": market_overview.get("data_summary", {}),
         "startup_done": _startup_done,
     }
 
@@ -1079,3 +1116,92 @@ async def ai_reflect(body: dict):
         return {"lesson": lesson, "win_rate": wr}
     except Exception as e:
         return {"error": str(e)}
+
+
+@app.get("/api/system/status")
+async def system_status():
+    """システム自己診断ダッシュボード (管理者用)"""
+    now = int(time.time())
+
+    # Gemini APIキー状態
+    gemini_keys_count = len(ai_analyzer._keys) if hasattr(ai_analyzer, "_keys") else 0
+    current_key_idx = getattr(ai_analyzer, "_key_idx", 0)
+    current_model_idx = getattr(ai_analyzer, "_model_idx", 0)
+    current_model = MODEL_FALLBACK_ORDER[current_model_idx % len(MODEL_FALLBACK_ORDER)] if _V2 else "N/A"
+
+    # Supabase テーブル行数
+    table_counts = {}
+    if db.client:
+        for tbl in ["predictions", "performance_log", "system_health", "ai_memory",
+                    "active_signals", "notification_logs"]:
+            try:
+                r = db.client.table(tbl).select("id", count="exact").limit(1).execute()
+                table_counts[tbl] = r.count or 0
+            except Exception:
+                table_counts[tbl] = -1
+    else:
+        table_counts = {"error": "Supabase not connected"}
+
+    # 当日のシグナル数
+    today_signals = {"total": 0, "buy": 0, "sell": 0, "wait": 0}
+    if db.client:
+        try:
+            today_start = datetime.utcnow().replace(hour=0, minute=0, second=0).isoformat()
+            r = db.client.table("predictions").select("direction")\
+                .gt("created_at", today_start).execute()
+            for row in (r.data or []):
+                d = row.get("direction", "WAIT")
+                today_signals["total"] += 1
+                today_signals[d.lower()] = today_signals.get(d.lower(), 0) + 1
+        except Exception:
+            pass
+
+    # パフォーマンス
+    try:
+        perf = db.get_performance_summary()
+        win_rate = perf.get("win_rate", 0)
+        total_trades = perf.get("total_trades", 0)
+    except Exception:
+        win_rate = 0
+        total_trades = 0
+
+    return {
+        "timestamp": now,
+        "uptime_seconds": now - int(_warmup_ts) if _warmup_ts else None,
+        "warmup_done": _warmup_done,
+        "startup_done": _startup_done,
+
+        "gemini": {
+            "keys_configured": gemini_keys_count,
+            "current_key_index": current_key_idx,
+            "current_model": current_model,
+            "calls_last_minute": len(_gemini_times),
+            "model_fallback_level": current_model_idx,
+            "ai_active": getattr(ai_analyzer, "model", None) is not None,
+        },
+
+        "supabase": {
+            "connected": db.client is not None,
+            "table_counts": table_counts,
+        },
+
+        "market": {
+            "mode": market_overview.get("mode", "starting"),
+            "last_update_ts": market_overview["last_update_ts"],
+            "last_update_ago_sec": now - market_overview["last_update_ts"],
+            "prices": {_short(k): v for k, v in price_cache.items() if v},
+        },
+
+        "performance": {
+            "win_rate": win_rate,
+            "total_trades": total_trades,
+            "today_signals": today_signals,
+            "daily_locked": _check_daily_lock(),
+        },
+
+        "modules": {
+            "engine_v2": _V2, "fred": _HAS_FRED, "session": _HAS_SESSION,
+            "market": _HAS_MARKET, "scanner": _HAS_SCANNER, "backtest": _HAS_BACKTEST,
+            "trade_monitor": _HAS_MONITOR, "cot": _HAS_COT,
+        },
+    }
