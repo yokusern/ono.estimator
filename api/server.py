@@ -88,29 +88,44 @@ async def analyze_symbol(symbol: str):
         print(f"[AsyncPool] Error on {symbol}: {e}")
         return None
 
+async def backtest_loop():
+    """過去の予測が当たったか自動採点するプロセス (30分おき)"""
+    print("[Self-Learning] Scoring cycle started.")
+    while True:
+        try:
+            pending = db.get_unscored_predictions()
+            for p in pending:
+                sym = p["symbol"]
+                current = price_cache.get(sym)
+                if current and current > 0:
+                    is_buy = "BUY" in p["status"].upper()
+                    is_sell = "SELL" in p["status"].upper()
+                    is_correct = False
+                    if is_buy and current > p["current_price"]: is_correct = True
+                    if is_sell and current < p["current_price"]: is_correct = True
+                    db.update_prediction_result(p["id"], current, is_correct)
+                    print(f"[Self-Learning] Scored {sym}: {'WIN' if is_correct else 'LOSS'}")
+        except Exception as e:
+            print(f"[Self-Learning] Error: {e}")
+        await asyncio.sleep(1800)
+
 async def estimation_loop():
     print("[Server] ONO High-Precision Autonomous Engine Started.")
-    
     while True:
         cycle_start = time.time()
         try:
-            print(f"[Loop] Cycle started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            performance_data = db.get_performance_summary()
+            print(f"[Loop] Cycle started with Intel: {performance_data}")
             
-            # 1. データ取得
             tasks = [analyze_symbol(sym) for sym in target_symbols]
             results = await asyncio.gather(*tasks)
             
-            # 2. 逐次AI分析 (レート制限回避のため、1銘柄ずつ2秒のディレイ)
             for res in results:
                 if not res: continue
-                
                 sym = res["symbol"]
                 chart_data[sym] = res["charts"]
-                
-                # マーケットが開いているかチェック
                 is_open = fetcher.is_market_open(sym)
                 
-                # UIの状態更新 (データ取得直後)
                 for tf in TIMEFRAMES:
                     status_text = res["mtf"].get(tf, {}).get("status", "Wait") if is_open else "Closed"
                     system_state[sym][tf].update({
@@ -118,13 +133,11 @@ async def estimation_loop():
                         "score": res["mtf"].get(tf, {}).get("score", 0) if is_open else 0
                     })
 
-                # Gemini 生分析の実行 (オープン中のみ、または仮想通貨)
                 if is_open:
-                    print(f"[Gemini] Analyzing {sym}...")
-                    ai_data = ai_analyzer.analyze_single(sym, res)
+                    print(f"[Gemini] Analyzing {sym} with Self-Learning...")
+                    ai_data = ai_analyzer.analyze_single(sym, res, feedback=performance_data)
                     
                     if ai_data and "ai_text" in ai_data:
-                        # グローバルテーマを最新の分析で更新
                         if market_overview["last_update_ts"] < int(time.time()) - 300:
                             market_overview["global_theme"] = ai_data["ai_text"][:100] + "..."
                             market_overview["last_update_ts"] = int(time.time())
@@ -137,7 +150,6 @@ async def estimation_loop():
                                 "last_updated": datetime.now().isoformat()
                             })
                         
-                        # 履歴保存
                         try:
                             db.save_prediction({
                                 "symbol": sym,
@@ -145,32 +157,23 @@ async def estimation_loop():
                                 "score": system_state[sym]["1m"]["score"],
                                 "ai_text": ai_data["ai_text"],
                                 "predicted_price": ai_data.get("predicted_price", 0),
-                                "probability": ai_data.get("probability", 0)
+                                "probability": ai_data.get("probability", 0),
+                                "current_price": price_cache[sym]
                             })
                         except Exception as db_e:
                             print(f"[Loop] DB Save Error for {sym}: {db_e}")
                         
-                        # 通知
                         if system_state[sym]["1m"]["score"] >= 80:
                             notifier.notify_if_needed(sym, res["result_obj"], ai_data, price_cache[sym])
-                    else:
-                        print(f"[Loop] AI Analysis failed or skipped for {sym}.")
-                else:
-                    print(f"[Market] {sym} is CLOSED. Skipping deep analysis until Monday.")
+                
+                if is_open: await asyncio.sleep(2.5)
 
-                # レート制限を回避するためのウェイト (銘柄ごと)
-                if is_open:
-                    await asyncio.sleep(2.5)
-
-            # Render生存戦略
             if os.environ.get("RENDER_EXTERNAL_URL"):
-                try:
-                    requests.get(f"{os.environ['RENDER_EXTERNAL_URL']}/api/health", timeout=5)
+                try: requests.get(f"{os.environ['RENDER_EXTERNAL_URL']}/api/health", timeout=5)
                 except: pass
 
             elapsed = time.time() - cycle_start
             sleep_time = max(5, 60 - elapsed)
-            print(f"[Loop] Cycle complete in {elapsed:.1f}s. Next scan in {sleep_time:.1f}s")
             await asyncio.sleep(sleep_time)
             
         except Exception as e:
@@ -181,6 +184,21 @@ async def estimation_loop():
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(estimation_loop())
+    asyncio.create_task(backtest_loop())
+    asyncio.create_task(anti_sleep_loop())
+
+async def anti_sleep_loop():
+    """Renderのスリープを防ぐ専用ループ (4分おきにセルフping)"""
+    await asyncio.sleep(10)  # 起動直後は少し待つ
+    while True:
+        render_url = os.environ.get("RENDER_EXTERNAL_URL")
+        if render_url:
+            try:
+                requests.get(f"{render_url}/api/health", timeout=10)
+                print(f"[Anti-Sleep] Ping sent to keep Render alive.")
+            except Exception as e:
+                print(f"[Anti-Sleep] Ping failed: {e}")
+        await asyncio.sleep(240)  # 4分おき
 
 @app.get("/api/predict")
 def get_prediction(tf: str = Query("1m", regex="^(1m|5m|15m|1h|4h)$")):
@@ -210,4 +228,4 @@ def read_root():
 
 @app.get("/api/health")
 def health_check():
-    return {"status": "healthy", "mode": "Serial_AI_Deep_Active", "last_sync": int(time.time())}
+    return {"status": "healthy", "mode": "Self_Learning_Serial_AI_Active", "last_sync": int(time.time())}

@@ -14,14 +14,14 @@ class GeminiAnalyzer:
         try:
             genai.configure(api_key=api_key)
             self.model = genai.GenerativeModel('models/gemini-1.5-flash')
-            print("[Gemini] Engine Online (Raw Intelligence Mode)")
+            print("[Gemini] Engine Online (Self-Evolution Mode)")
         except Exception as e:
             print(f"[Gemini] Init Error: {e}")
             traceback.print_exc()
             self.model = None
 
-    def analyze_single(self, symbol: str, data: dict) -> dict:
-        """単一銘柄に対して深い分析を実行"""
+    def analyze_single(self, symbol: str, data: dict, feedback: str = "") -> dict:
+        """単一銘柄に対して深い分析と自己学習を実行"""
         if not self.model:
             return None
 
@@ -29,23 +29,27 @@ class GeminiAnalyzer:
             mtf = data.get("mtf", {})
             prompt = f"""
 Return ONLY a raw JSON object.
-As an elite investment coach & top-tier quantitative strategist, provide a 200-300 character analysis for: {symbol}
+As an AI-driven quantitative strategist that EVOLVES from past results, analyze: {symbol}
 
 [Market Data]
 - Short (1m): Score={mtf.get('1m', {}).get('score')}, RSI={mtf.get('1m', {}).get('rsi')}
 - Long (1h): Score={mtf.get('1h', {}).get('score')}, Theme={mtf.get('1h', {}).get('theme')}
 
-[Coaching Requirement]
-1. Logic: Explain the 'Why' using professional terms (e.g., Fakeouts, Support-Resistance Flip).
-2. History: Compare current metrics to historical market cycles (e.g., 'Similar to the 2008 crash structure' or '2021 bull run momentum').
-3. Strategy Plan: Provide the following 3-item set clearly:
+[Self-Learning Feedback (Your Past Performance)]
+{feedback}
+
+[Requirement]
+1. Logic: Explain the 'Why' using professional terms.
+2. Historical Similarity: Identify a specific past market date/cycle similar to this (e.g., 'Similar to Oct 2023 bounce').
+3. Self-Evolution: Mention how your past performance (the feedback) influences this specific decision.
+4. Strategy Plan: 
    - Recommended Entry
    - Take Profit (Target)
    - Stop Loss (Cut)
 
 JSON Format:
 {{
-  "ai_text": "【論理解説】... \n【歴史比較】... \n【戦略】Entry:XXX / TP:XXX / SL:XXX",
+  "ai_text": "【論理解説】... \n【過去類似局面】... \n【自己進化】... \n【戦略】Entry:XXX / TP:XXX / SL:XXX",
   "predicted_price": 0.0,
   "probability": 0
 }}
@@ -58,7 +62,6 @@ JSON Format:
             if json_match:
                 return json.loads(json_match.group(1))
             
-            print(f"[Gemini] Parse failed for {symbol}. Output: {text[:100]}")
             return None
         except Exception as e:
             print(f"[Gemini] Analysis failed for {symbol}: {e}")

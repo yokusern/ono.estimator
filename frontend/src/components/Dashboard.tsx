@@ -1,11 +1,11 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import useSWR from "swr";
 import { 
   Activity, AlertTriangle, TrendingUp, DollarSign, BrainCircuit, 
   LayoutDashboard, Globe, Link2, History, ChevronRight, Zap, ShieldAlert,
-  CandlestickChart, BarChart, Clock, Target, Percent, Timer, Loader2
+  CandlestickChart, BarChart, Clock, Target, Percent, Timer, Loader2, Wifi
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -17,23 +17,30 @@ import dynamic from "next/dynamic";
 
 const TradingViewChart = dynamic(() => import("./TradingViewChart"), { ssr: false });
 
+// タイムアウト付きリトライ・フェッチャー
 const fetcher = async (url: string) => {
-  let retries = 3;
-  while (retries > 0) {
+  const MAX_RETRIES = 4;
+  const DELAYS = [1000, 2000, 4000, 8000]; // 指数バックオフ
+  
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20000); // 20秒タイムアウト
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: controller.signal, cache: "no-store" });
+      clearTimeout(timer);
       if (res.ok) return res.json();
-      if (res.status === 503 || res.status === 504) {
-        // Backend might be waking up
-        await new Promise(r => setTimeout(r, 2000));
-        retries--;
+      if (attempt < MAX_RETRIES - 1) {
+        await new Promise(r => setTimeout(r, DELAYS[attempt]));
         continue;
       }
-      throw new Error("API Connection Failed");
-    } catch (err) {
-      if (retries === 1) throw err;
-      await new Promise(r => setTimeout(r, 2000));
-      retries--;
+      throw new Error(`API Error: ${res.status}`);
+    } catch (err: unknown) {
+      clearTimeout(timer);
+      if (attempt < MAX_RETRIES - 1) {
+        await new Promise(r => setTimeout(r, DELAYS[attempt]));
+        continue;
+      }
+      throw err;
     }
   }
 };
@@ -52,6 +59,15 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState("dashboard");
   const [activeTF, setActiveTF] = useState("1m");
   const [margin, setMargin] = useState<number>(1000000);
+  const [isWakingUp, setIsWakingUp] = useState(false);
+
+  // ページ表示直後にバックエンドをウォームアップ (Renderのコールドスタート対策)
+  useEffect(() => {
+    setIsWakingUp(true);
+    fetch("/api/warmup")
+      .then(() => setIsWakingUp(false))
+      .catch(() => setIsWakingUp(false));
+  }, []);
 
   const { data, error, isLoading } = useSWR(`${API_URL}/api/predict?tf=${activeTF}`, fetcher, {
     refreshInterval: 30000,
@@ -166,7 +182,13 @@ export default function Dashboard() {
           </div>
 
           <div className="flex items-center gap-6 shrink-0">
-            {error && (
+            {isWakingUp && !data && (
+              <div className="flex items-center gap-2 bg-sky-50 px-4 py-2 rounded-xl border border-sky-100 animate-pulse">
+                <Wifi className="w-3 h-3 text-sky-500" />
+                <span className="text-[9px] font-black text-sky-500 uppercase tracking-widest">サーバー起動中...</span>
+              </div>
+            )}
+            {error && !isWakingUp && (
               <div className="flex items-center gap-2 bg-red-50 px-4 py-2 rounded-xl border border-red-100 animate-pulse">
                 <AlertTriangle className="w-3 h-3 text-red-500" />
                 <span className="text-[9px] font-black text-red-500 uppercase tracking-widest">API Offline</span>
