@@ -20,11 +20,23 @@ load_dotenv()
 
 app = FastAPI(title="ONO Estimator Ultra v4.5", version="4.5.0")
 
+# CORS: Vercel URLを明示指定（ブラウザからの接続を確実に許可）
+VERCEL_URL = os.environ.get("VERCEL_URL", "")
+ALLOWED_ORIGINS = [
+    "https://ono-estimator.vercel.app",
+    "https://ono-estimator-ultra.vercel.app",
+    "http://localhost:3000",
+]
+if VERCEL_URL:
+    ALLOWED_ORIGINS.append(f"https://{VERCEL_URL}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=r"https://.*\.vercel\.app",  # 全Vercelプレビューも許可
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
+    allow_credentials=False,  # credentialsなしで"*"相当の柔軟性を維持
 )
 
 target_symbols = ["USDJPY=X", "GC=F", "BTC-USD", "^N225", "XAGUSD=X", "AUDJPY=X", "EURUSD=X", "EURJPY=X"]
@@ -42,48 +54,49 @@ ai_analyzer = GeminiAnalyzer()
 notifier = Notifier()
 db = SupabaseClient()
 
-async def analyze_symbol(symbol: str):
-    """単一銘柄の並列データ取得処理"""
-    try:
-        df_base = fetcher.fetch_ohlcv(symbol, interval="1min")
-        if df_base is None or df_base.empty: return None
+def _sync_analyze_symbol(symbol: str):
+    """同期処理をスレッドプールで実行するためのラッパー"""
+    df_base = fetcher.fetch_ohlcv(symbol, interval="1min")
+    if df_base is None or df_base.empty: return None
+    
+    mtf_summaries = {}
+    symbol_charts = {}
+    result = None
+    
+    for tf in TIMEFRAMES:
+        df_tf = fetcher.resample_ohlcv(df_base, tf)
+        df_tf = fetcher.calculate_indicators(df_tf)
+        if df_tf.empty: continue
         
-        mtf_summaries = {}
-        symbol_charts = {}
+        result = engine.analyze(None, symbol=symbol, df_precomputed=df_tf)
+        latest = df_tf.iloc[-1]
         
-        for tf in TIMEFRAMES:
-            df_tf = fetcher.resample_ohlcv(df_base, tf)
-            df_tf = fetcher.calculate_indicators(df_tf)
-            if df_tf.empty: continue
-            
-            result = engine.analyze(None, symbol=symbol, df_precomputed=df_tf)
-            latest = df_tf.iloc[-1]
-            
-            mtf_summaries[tf] = {
-                "status": result.status.value if result.status else "Wait",
-                "score": result.win_rate_score,
-                "rsi": round(float(latest.get('rsi', 0)), 1),
-                "price": float(latest['close']),
-                "theme": "MTF Active"
-            }
-            
-            records = []
-            for idx, row in df_tf.tail(100).iterrows():
-                records.append({
-                    "time": int(idx.timestamp()),
-                    "open": float(row['open']), "high": float(row['high']), "low": float(row['low']), "close": float(row['close']),
-                    "rsi": float(row.get('rsi', 0)), "macd": float(row.get('macd', 0))
-                })
-            symbol_charts[tf] = records
-            
-        price_cache[symbol] = float(df_base.iloc[-1]['close'])
-        
-        return {
-            "symbol": symbol,
-            "mtf": mtf_summaries,
-            "charts": symbol_charts,
-            "result_obj": result
+        mtf_summaries[tf] = {
+            "status": result.status.value if result.status else "Wait",
+            "score": result.win_rate_score,
+            "rsi": round(float(latest.get('rsi', 0)), 1),
+            "price": float(latest['close']),
+            "theme": "MTF Active"
         }
+        
+        records = []
+        for idx, row in df_tf.tail(100).iterrows():
+            records.append({
+                "time": int(idx.timestamp()),
+                "open": float(row['open']), "high": float(row['high']), "low": float(row['low']), "close": float(row['close']),
+                "rsi": float(row.get('rsi', 0)), "macd": float(row.get('macd', 0))
+            })
+        symbol_charts[tf] = records
+        
+    price_cache[symbol] = float(df_base.iloc[-1]['close'])
+    return {"symbol": symbol, "mtf": mtf_summaries, "charts": symbol_charts, "result_obj": result}
+
+async def analyze_symbol(symbol: str):
+    """ブロッキング処理をスレッドにオフロードしてevent loopを解放する"""
+    try:
+        # asyncio.to_thread で同期関数をスレッドプールで実行
+        # これにより重い処理中でもAPIが即座に応答できる
+        return await asyncio.to_thread(_sync_analyze_symbol, symbol)
     except Exception as e:
         print(f"[AsyncPool] Error on {symbol}: {e}")
         return None
@@ -135,7 +148,10 @@ async def estimation_loop():
 
                 if is_open:
                     print(f"[Gemini] Analyzing {sym} with Self-Learning...")
-                    ai_data = ai_analyzer.analyze_single(sym, res, feedback=performance_data)
+                    # Gemini API呼び出しもスレッドに移してevent loopをブロックしない
+                    ai_data = await asyncio.to_thread(
+                        ai_analyzer.analyze_single, sym, res, performance_data
+                    )
                     
                     if ai_data and "ai_text" in ai_data:
                         if market_overview["last_update_ts"] < int(time.time()) - 300:
@@ -183,6 +199,24 @@ async def estimation_loop():
 
 @app.on_event("startup")
 async def startup_event():
+    # 起動直後にSupabaseから最新キャッシュをロード (初期表示を即座に返すため)
+    try:
+        history = db.get_history(limit=len(target_symbols))
+        for row in history:
+            sym = row.get("symbol")
+            if sym and sym in system_state:
+                for tf in TIMEFRAMES:
+                    system_state[sym][tf].update({
+                        "ai_text": row.get("ai_text", "Syncing..."),
+                        "score": row.get("score", 0),
+                        "status": row.get("status", "Wait"),
+                        "predicted_price": row.get("predicted_price", 0),
+                        "probability": row.get("probability", 0),
+                    })
+        print(f"[Startup] Preloaded {len(history)} records from Supabase.")
+    except Exception as e:
+        print(f"[Startup] Preload failed (non-critical): {e}")
+
     asyncio.create_task(estimation_loop())
     asyncio.create_task(backtest_loop())
     asyncio.create_task(anti_sleep_loop())
