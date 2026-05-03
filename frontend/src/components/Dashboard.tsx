@@ -5,7 +5,7 @@ import useSWR from "swr";
 import {
   Activity, AlertTriangle, BrainCircuit,
   LayoutDashboard, Globe, Link2, History, Zap, ShieldAlert,
-  Clock, Loader2, Wifi, Timer,
+  Clock, Loader2, Wifi, Timer, TrendingUp, TrendingDown, BarChart2,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -92,6 +92,12 @@ export default function Dashboard() {
     { ...swrConfig, refreshInterval: 120000 }
   );
 
+  const { data: macroData } = useSWR(
+    `${API_URL}/api/macro`,
+    fetcher,
+    { ...swrConfig, refreshInterval: 300000 }
+  );
+
   const isConnected = !error && !isLoading && !!data;
 
   const currentData = useMemo(() => {
@@ -156,6 +162,7 @@ export default function Dashboard() {
             isIronClad={isIronClad}
             activeTF={activeTF}
             setActiveTF={setActiveTF}
+            macroData={macroData}
           />
         );
       case "multi":
@@ -261,7 +268,7 @@ function NavButton({ active, onClick, icon, label }: any) {
   );
 }
 
-function DashboardView({ symbol, data, chartData, margin, setMargin, riskAmount, recommendedRiskPercent, isIronClad, activeTF, setActiveTF }: any) {
+function DashboardView({ symbol, data, chartData, margin, setMargin, riskAmount, recommendedRiskPercent, isIronClad, activeTF, setActiveTF, macroData }: any) {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-4 gap-10 animate-in fade-in slide-in-from-bottom-12 duration-1000">
       {/* Left column */}
@@ -399,6 +406,8 @@ function DashboardView({ symbol, data, chartData, margin, setMargin, riskAmount,
             <p className="text-lg font-black text-white">Multi-Layer Scanning</p>
           </div>
         </div>
+
+        <MacroPanel macroData={macroData} symbol={symbol} />
       </div>
     </div>
   );
@@ -463,6 +472,119 @@ function CorrelationView({ overview }: any) {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function MacroPanel({ macroData, symbol }: { macroData: any; symbol: string }) {
+  const fred = macroData?.fred || {};
+  const rateDiffs = macroData?.rate_diffs || {};
+  const eventRisk = macroData?.event_risk || {};
+
+  const vix = fred?.VIXCLS?.value;
+  const t10y2y = fred?.T10Y2Y?.value;
+  const dxy = fred?.DTWEXBGS?.value;
+  const cpi = fred?.CPIAUCSL?.value;
+  const ff = fred?.FEDFUNDS?.value;
+
+  const pairKey = symbol === "USDJPY" ? "USDJPY"
+    : symbol === "EURUSD" ? "EURUSD"
+    : symbol === "EURJPY" ? "EURJPY"
+    : symbol === "AUDJPY" ? "AUDJPY"
+    : null;
+  const rateInfo = pairKey ? rateDiffs[pairKey] : null;
+
+  return (
+    <div className="bg-white shadow-premium rounded-[48px] overflow-hidden">
+      <div className="pb-8 border-b border-slate-50 p-10">
+        <h3 className="text-[10px] font-black uppercase tracking-[0.5em] flex items-center gap-4 text-slate-400">
+          <BarChart2 className="w-5 h-5 text-violet-500" />Macro Environment
+        </h3>
+      </div>
+      <div className="p-10 space-y-6">
+
+        {/* イベントリスク警告 */}
+        {eventRisk?.warning && (
+          <div className={`p-6 rounded-[24px] border text-[11px] font-bold leading-relaxed ${
+            eventRisk.critical
+              ? "bg-rose-50 border-rose-100 text-rose-600"
+              : "bg-amber-50 border-amber-100 text-amber-600"
+          }`}>
+            {eventRisk.message}
+          </div>
+        )}
+
+        {/* マクロ指標カード */}
+        <div className="grid grid-cols-2 gap-4">
+          <MacroMetric
+            label="VIX"
+            value={vix}
+            unit=""
+            status={vix > 25 ? "danger" : vix > 18 ? "warn" : "ok"}
+            hint={vix > 25 ? "リスクオフ" : vix > 18 ? "警戒" : "低ボラ"}
+          />
+          <MacroMetric
+            label="逆イールド"
+            value={t10y2y}
+            unit="%"
+            status={t10y2y < 0 ? "danger" : "ok"}
+            hint={t10y2y < 0 ? "景気後退シグナル" : "正常"}
+          />
+          <MacroMetric
+            label="DXY"
+            value={dxy}
+            unit=""
+            status="neutral"
+            hint="ドル強弱"
+          />
+          <MacroMetric
+            label="FF金利"
+            value={ff}
+            unit="%"
+            status="neutral"
+            hint={`CPI ${cpi ?? "---"}%`}
+          />
+        </div>
+
+        {/* 金利差バッジ */}
+        {rateInfo && (
+          <div className="bg-slate-50 rounded-[24px] p-6 flex items-center justify-between">
+            <div>
+              <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">
+                {pairKey} 金利差
+              </p>
+              <p className="text-xl font-black text-slate-800">
+                {rateInfo.diff > 0 ? "+" : ""}{rateInfo.diff}%
+              </p>
+              <p className="text-[9px] text-slate-400 mt-1">
+                {rateInfo.base} {rateInfo.base_rate}% / {rateInfo.quote} {rateInfo.quote_rate}%
+              </p>
+            </div>
+            <span className="text-3xl">{rateInfo.badge}</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MacroMetric({ label, value, unit, status, hint }: {
+  label: string; value: number | undefined; unit: string;
+  status: "ok" | "warn" | "danger" | "neutral"; hint: string;
+}) {
+  const colors = {
+    ok: "text-emerald-500",
+    warn: "text-amber-500",
+    danger: "text-rose-500",
+    neutral: "text-sky-500",
+  };
+  return (
+    <div className="bg-slate-50/70 rounded-[20px] p-5 border border-slate-100/50">
+      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2">{label}</p>
+      <p className={`text-2xl font-black tabular-nums ${colors[status]}`}>
+        {value !== undefined && value !== null ? `${value}${unit}` : "---"}
+      </p>
+      <p className="text-[9px] text-slate-400 mt-1">{hint}</p>
     </div>
   );
 }

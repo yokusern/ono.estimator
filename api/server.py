@@ -15,6 +15,9 @@ from ono_estimator.core.ai_analyzer import GeminiAnalyzer
 from ono_estimator.core.notifier import Notifier
 from ono_estimator.core.database import SupabaseClient
 from ono_estimator.core import ONOPredictionEngine
+from ono_estimator.core.fred_fetcher import FredFetcher
+from ono_estimator.core.event_calendar import EventCalendar
+from ono_estimator.core.rate_table import rate_table
 
 load_dotenv()
 
@@ -73,6 +76,12 @@ engine = ONOPredictionEngine()
 ai_analyzer = GeminiAnalyzer()
 notifier = Notifier()
 db = SupabaseClient()
+fred_fetcher = FredFetcher()
+event_calendar = EventCalendar()
+
+# FREDデータ・イベントリスクのグローバルキャッシュ
+_fred_data: dict = {}
+_event_risk: dict = {}
 
 
 # ─── ユーティリティ ────────────────────────────────────────
@@ -194,6 +203,18 @@ async def estimation_loop():
             mode = "Weekend" if is_weekend else "Weekday"
             market_overview["mode"] = mode
 
+            # ─── FREDデータ・金利テーブル・イベントカレンダーを並列更新 ───
+            global _fred_data, _event_risk
+            try:
+                _fred_data, _, _event_risk = await asyncio.gather(
+                    fred_fetcher.fetch_all(),
+                    rate_table.refresh(),
+                    event_calendar.check_upcoming_events(),
+                    return_exceptions=False,
+                )
+            except Exception as e:
+                print(f"[FRED/Calendar] Update failed (non-critical): {e}")
+
             # ─── Step 1: 全銘柄のデータ取得（並列） ───────────
             tasks = [asyncio.to_thread(_sync_fetch_and_analyze, sym) for sym in SYMBOLS]
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -236,20 +257,28 @@ async def estimation_loop():
                 mode_label = "週末展望" if not is_market_open(sym) else "生分析"
                 print(f"[Gemini] {mode_label} → {sym}")
 
-                # AI分析をスレッドで実行
+                # AI分析をスレッドで実行（FREDデータ・イベントリスク付き）
                 record_gemini_call()
+                sym_event_risk = await event_calendar.check_upcoming_events(sym)
                 ai_data = await asyncio.to_thread(
-                    ai_analyzer.analyze_single, sym, res, performance_data
+                    ai_analyzer.analyze_single,
+                    sym, res, performance_data,
+                    _fred_data, sym_event_risk,
                 )
 
                 if ai_data and ai_data.get("ai_text"):
                     last_ai_analysis[sym] = time.time()
+                    multiplier = sym_event_risk.get("score_multiplier", 1.0)
                     for tf in TIMEFRAMES:
+                        raw_score = system_state[sym][tf].get("score", 0)
                         system_state[sym][tf].update({
                             "ai_text": ai_data["ai_text"],
                             "predicted_price": ai_data.get("predicted_price", 0),
                             "probability": ai_data.get("probability", 0),
                             "last_updated": datetime.now().isoformat(),
+                            "score": int(raw_score * multiplier),
+                            "event_warning": sym_event_risk.get("warning", False),
+                            "event_message": sym_event_risk.get("message", ""),
                         })
 
                     # Supabaseに保存
@@ -378,3 +407,34 @@ def get_history(limit: int = Query(50, le=100)):
         return {"data": db.get_history(limit=limit)}
     except Exception:
         return {"data": []}
+
+
+@app.get("/api/macro")
+def get_macro():
+    """マクロ環境データを返す（フロント用）"""
+    rate_diffs = rate_table.get_all_diffs()
+    return {
+        "fred": _fred_data,
+        "rate_diffs": rate_diffs,
+        "event_risk": _event_risk,
+        "server_time": int(time.time()),
+    }
+
+
+@app.get("/api/debug/fred")
+async def debug_fred():
+    """FRED APIの動作確認用エンドポイント"""
+    try:
+        data = await fred_fetcher.fetch_all()
+        formatted = fred_fetcher.format_for_prompt(data)
+        fetched = {k: v for k, v in data.items() if v is not None}
+        return {
+            "status": "ok" if fetched else "no_data",
+            "fred_api_key_set": bool(os.environ.get("FRED_API_KEY")),
+            "fetched_count": len(fetched),
+            "total_series": len(fetched) + sum(1 for v in data.values() if v is None),
+            "data": fetched,
+            "prompt_preview": formatted,
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
