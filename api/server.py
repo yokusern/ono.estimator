@@ -137,15 +137,16 @@ async def estimation_loop():
                             # キーの正規化 (AIが返すキーに合わせる)
                             matching_key = next((k for k in ai_results.keys() if k in sym or sym in k), None)
                             
-                            if matching_key:
-                                ai_data = ai_results[matching_key]
-                                for tf in TIMEFRAMES:
-                                    system_state[sym][tf].update({
-                                        "ai_text": ai_data.get("ai_text", "Intelligence processing..."),
-                                        "predicted_price": ai_data.get("predicted_price", 0),
-                                        "probability": ai_data.get("probability", 0),
-                                        "last_updated": datetime.now().isoformat()
-                                    })
+                                if matching_key:
+                                    ai_data = ai_results[matching_key]
+                                    fallback_text = f"【テクニカル分析】スコア: {system_state[sym]['1m']['score']}% / RSI: {batch_metrics[sym]['mtf'].get('1m', {}).get('rsi')}"
+                                    for tf in TIMEFRAMES:
+                                        system_state[sym][tf].update({
+                                            "ai_text": ai_data.get("ai_text") or fallback_text,
+                                            "predicted_price": ai_data.get("predicted_price", 0),
+                                            "probability": ai_data.get("probability", 0),
+                                            "last_updated": datetime.now().isoformat()
+                                        })
                                 
                                 # 通知としきい値保存 (50%以上で保存、80%以上で通知)
                                 if system_state[sym]["1m"]["score"] >= 80:

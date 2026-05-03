@@ -13,44 +13,53 @@ class GeminiAnalyzer:
 
         try:
             genai.configure(api_key=api_key)
-            # モデル名をより一般的なものに変更
-            self.model = genai.GenerativeModel('gemini-1.5-flash')
-            print("[Gemini] Engine Online (gemini-1.5-flash)")
+            # モデル名をフルパスで指定して確実性を向上
+            self.model = genai.GenerativeModel('models/gemini-1.5-flash')
+            print("[Gemini] Engine Online (models/gemini-1.5-flash)")
         except Exception as e:
             print(f"[Gemini] Init Error: {e}")
             traceback.print_exc()
             self.model = None
 
     def batch_analyze(self, symbols_data: dict) -> dict:
-        """MTF分析を強化"""
+        """MTF分析を強化し、解析エラーを極限まで減らす"""
         if not self.model:
-            return {sym: {"ai_text": "AI Analyzer Offline."} for sym in symbols_data.keys()}
+            return {sym: {"ai_text": "AI Analyzer Offline. Please check GEMINI_API_KEY."} for sym in symbols_data.keys()}
 
         try:
             data_summary = ""
             for sym, d in symbols_data.items():
                 mtf = d.get("mtf", {})
-                data_summary += f"--- {sym} ---\n"
-                data_summary += f"1m Momentum: RSI={mtf.get('1m', {}).get('rsi')}, Price={mtf.get('1m', {}).get('price')}\n"
-                data_summary += f"1h Structure: Trend={mtf.get('1h', {}).get('theme')}, Score={mtf.get('1h', {}).get('score')}\n\n"
+                data_summary += f"[{sym}]\n"
+                data_summary += f"- 1m: Score={mtf.get('1m', {}).get('score')}, RSI={mtf.get('1m', {}).get('rsi')}\n"
+                data_summary += f"- 1h: Theme={mtf.get('1h', {}).get('theme')}, Score={mtf.get('1h', {}).get('score')}\n\n"
 
             prompt = f"""
-投資ストラテジストとして、短期と長期のテクニカルから、次の一分の予測を出力してください。
-JSON形式で、各銘柄ごとに 'ai_text', 'predicted_price', 'probability' を含めてください。
-最後に全体のマーケット概況を 'market_intelligence' として記述してください。
-
-【マーケットデータ】
+Return ONLY a raw JSON object. NO markdown, NO code blocks.
+Analyze these financial assets and provide strategy:
 {data_summary}
+
+Required JSON format:
+{{
+  "SYMBOL": {{
+    "ai_text": "Japanese strategy description",
+    "predicted_price": 123.45,
+    "probability": 85
+  }},
+  "market_intelligence": "Overall market theme"
+}}
 """
             response = self._call_api(prompt)
+            text = response.text
             
+            # JSON部分を抽出 (markdownの ```json ... ``` があっても対応)
             import re
-            match = re.search(r'\{.*\}', response.text, re.DOTALL)
-            if match:
-                return json.loads(match.group())
+            json_match = re.search(r'(\{.*\})', text, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group(1))
             
-            print(f"[Gemini] Raw Response: {response.text}")
-            return {sym: {"ai_text": "Parsing Error."} for sym in symbols_data.keys()}
+            print(f"[Gemini] Parsing Error. Raw output: {text[:200]}")
+            return {sym: {"ai_text": "Analysis parsing failed."} for sym in symbols_data.keys()}
         except Exception as e:
             print(f"[Gemini] Analysis failed: {e}")
             traceback.print_exc()
