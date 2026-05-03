@@ -13,12 +13,26 @@ class GeminiAnalyzer:
 
         try:
             genai.configure(api_key=api_key)
-            self.model = genai.GenerativeModel('models/gemini-1.5-flash')
-            print("[Gemini] Engine Online (Self-Evolution Mode)")
-        except Exception as e:
-            print(f"[Gemini] Init Error: {e}")
-            traceback.print_exc()
+            # モデル優先順位: 2.0-flash → 1.5-flash → 1.5-flash-latest
+            model_candidates = [
+                'gemini-2.0-flash',
+                'gemini-1.5-flash',
+                'gemini-1.5-flash-latest',
+            ]
             self.model = None
+            for model_name in model_candidates:
+                try:
+                    m = genai.GenerativeModel(model_name)
+                    # 疎通テストで存在確認
+                    m.generate_content("ping", generation_config={"max_output_tokens": 1})
+                    self.model = m
+                    print(f"[Gemini] Engine Online: {model_name}")
+                    break
+                except Exception:
+                    print(f"[Gemini] Model {model_name} not available, trying next...")
+                    continue
+            if not self.model:
+                print("[Gemini] All models failed to initialize.")
 
     def analyze_single(self, symbol: str, data: dict, feedback: str = "") -> dict:
         """単一銘柄に対して深い分析と自己学習を実行"""

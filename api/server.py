@@ -39,7 +39,7 @@ app.add_middleware(
     allow_credentials=False,  # credentialsなしで"*"相当の柔軟性を維持
 )
 
-target_symbols = ["USDJPY=X", "GC=F", "BTC-USD", "^N225", "XAGUSD=X", "AUDJPY=X", "EURUSD=X", "EURJPY=X"]
+target_symbols = ["USDJPY=X", "GC=F", "BTC-USD", "^N225", "SI=F", "AUDJPY=X", "EURUSD=X", "EURJPY=X"]
 TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h"]
 
 # グローバルステート
@@ -225,11 +225,14 @@ async def anti_sleep_loop():
     """Renderのスリープを防ぐ専用ループ (4分おきにセルフping)"""
     await asyncio.sleep(10)  # 起動直後は少し待つ
     while True:
-        render_url = os.environ.get("RENDER_EXTERNAL_URL")
+        render_url = os.environ.get("RENDER_EXTERNAL_URL", "")
         if render_url:
+            # URLが http:// または https:// で始まらない場合に修正
+            if not render_url.startswith("http"):
+                render_url = f"https://{render_url}"
             try:
-                requests.get(f"{render_url}/api/health", timeout=10)
-                print(f"[Anti-Sleep] Ping sent to keep Render alive.")
+                r = requests.get(f"{render_url}/api/health", timeout=10)
+                print(f"[Anti-Sleep] Ping OK ({r.status_code}) -> {render_url}")
             except Exception as e:
                 print(f"[Anti-Sleep] Ping failed: {e}")
         await asyncio.sleep(240)  # 4分おき
