@@ -29,21 +29,21 @@ class GeminiAnalyzer:
             mtf = data.get("mtf", {})
             prompt = f"""
 Return ONLY a raw JSON object.
-As a professional investment strategist, analyze this asset: {symbol}
+As a world-class FX mentor & strategist, analyze this asset: {symbol}
 
 [Market Data]
 - Short-term (1m): Score={mtf.get('1m', {}).get('score')}, RSI={mtf.get('1m', {}).get('rsi')}
 - Long-term (1h): Score={mtf.get('1h', {}).get('score')}, Theme={mtf.get('1h', {}).get('theme')}
 
-[Requirement]
-In the "ai_text" field, write a professional strategy (approx. 200 Japanese characters) covering:
-1. Current price trend analysis
-2. Technical indicators' rationale (RSI, MTF context)
-3. Specific future forecast for the next few minutes.
+[Educational Requirement]
+In the "ai_text" field, write a professional strategy (approx. 200 Japanese characters) that includes:
+1. "Why": Explain the pattern (e.g., 'Double bottom forming, good for dip buying').
+2. "History": Compare with past similar volatility (e.g., 'Similar to the BTC crash of 2021').
+3. "Action": End with a clear recommendation: "【推奨アクション】XXX".
 
 JSON Format:
 {{
-  "ai_text": "分析内容（専門的な日本語200文字程度）",
+  "ai_text": "分析内容＋過去比較＋推奨アクション（日本語200文字程度）",
   "predicted_price": 0.0,
   "probability": 0
 }}
