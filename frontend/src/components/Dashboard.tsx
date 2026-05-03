@@ -6,12 +6,18 @@ import {
   Activity, AlertTriangle, BrainCircuit,
   LayoutDashboard, Globe, Link2, History, Zap, ShieldAlert,
   Clock, Loader2, Wifi, Timer, TrendingUp, TrendingDown, BarChart2,
+  Target, Award, ScanSearch,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import dynamic from "next/dynamic";
 import { RSIGauge, TrendAlignment } from "./ChartComponents";
+import ScannerRanking from "./ScannerRanking";
+import MoneyManager from "./MoneyManager";
+import AccuracyTracker from "./AccuracyTracker";
+import EdgePanel from "./EdgePanel";
+import ForecastChart from "./ForecastChart";
 
 const TradingViewChart = dynamic(() => import("./TradingViewChart"), { ssr: false });
 
@@ -113,7 +119,9 @@ export default function Dashboard() {
   const marketOverview = data?.overview || {
     fear_greed: "50",
     global_theme: "Mapping Market Synergy...",
+    session_label: "",
   };
+  const sessionLabel = marketOverview.session_label || "";
 
   const score = currentData?.score || 0;
   const isIronClad = score >= 80;
@@ -171,6 +179,10 @@ export default function Dashboard() {
         return <CorrelationView overview={marketOverview} />;
       case "history":
         return <HistoryView history={historyData?.data || []} />;
+      case "scanner":
+        return <ScannerView setActiveSymbol={(s: string) => { setActiveSymbol(s); setActiveTab("dashboard"); }} />;
+      case "accuracy":
+        return <AccuracyView />;
       default:
         return null;
     }
@@ -188,7 +200,7 @@ export default function Dashboard() {
               <span className="font-black text-2xl tracking-tighter text-slate-900 leading-none">
                 ONO <span className="text-sky-500">Estimator</span>
               </span>
-              <span className="text-[9px] font-black uppercase tracking-[0.4em] text-slate-300 mt-1">Ultra Pro v4.5</span>
+              <span className="text-[9px] font-black uppercase tracking-[0.4em] text-slate-300 mt-1">Ultra Pro v6.0{sessionLabel ? ` — ${sessionLabel}` : ""}</span>
             </div>
           </div>
 
@@ -242,12 +254,14 @@ export default function Dashboard() {
         </div>
       </main>
 
-      <nav className="fixed bottom-10 left-1/2 -translate-x-1/2 w-[90%] max-w-lg glass shadow-premium rounded-[40px] p-2.5 z-50 border border-slate-200/50">
-        <div className="grid grid-cols-4 gap-2">
-          <NavButton active={activeTab === "dashboard"} onClick={() => setActiveTab("dashboard")} icon={<LayoutDashboard size={18} />} label="Focus" />
-          <NavButton active={activeTab === "multi"} onClick={() => setActiveTab("multi")} icon={<Globe size={18} />} label="Multi" />
-          <NavButton active={activeTab === "correlation"} onClick={() => setActiveTab("correlation")} icon={<Link2 size={18} />} label="Market" />
-          <NavButton active={activeTab === "history"} onClick={() => setActiveTab("history")} icon={<History size={18} />} label="Logs" />
+      <nav className="fixed bottom-10 left-1/2 -translate-x-1/2 w-[95%] max-w-2xl glass shadow-premium rounded-[40px] p-2.5 z-50 border border-slate-200/50">
+        <div className="grid grid-cols-6 gap-1.5">
+          <NavButton active={activeTab === "dashboard"} onClick={() => setActiveTab("dashboard")} icon={<LayoutDashboard size={16} />} label="Focus" />
+          <NavButton active={activeTab === "multi"} onClick={() => setActiveTab("multi")} icon={<Globe size={16} />} label="Multi" />
+          <NavButton active={activeTab === "scanner"} onClick={() => setActiveTab("scanner")} icon={<ScanSearch size={16} />} label="Scan" />
+          <NavButton active={activeTab === "correlation"} onClick={() => setActiveTab("correlation")} icon={<Link2 size={16} />} label="Market" />
+          <NavButton active={activeTab === "accuracy"} onClick={() => setActiveTab("accuracy")} icon={<Award size={16} />} label="Stats" />
+          <NavButton active={activeTab === "history"} onClick={() => setActiveTab("history")} icon={<History size={16} />} label="Logs" />
         </div>
       </nav>
     </div>
@@ -283,6 +297,16 @@ function DashboardView({ symbol, data, chartData, margin, setMargin, riskAmount,
                 <span className="text-[140px] font-black tracking-tighter text-slate-900 leading-none">{data?.score ?? 0}</span>
                 <span className="text-4xl font-black text-slate-200">%</span>
               </div>
+              {data?.session_multiplier && data.session_multiplier !== 1 && (
+                <span className="text-[9px] font-black text-sky-500 bg-sky-50 px-3 py-1.5 rounded-full">
+                  ×{data.session_multiplier} セッション補正
+                </span>
+              )}
+              {data?.cached && (
+                <span className="text-[9px] font-black text-amber-600 bg-amber-50 px-3 py-1.5 rounded-full">
+                  🕐 キャッシュ
+                </span>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-6">
@@ -316,18 +340,25 @@ function DashboardView({ symbol, data, chartData, margin, setMargin, riskAmount,
           <div className="p-10">
             <div className="h-[350px] pr-6 overflow-y-auto">
               <div className="space-y-6">
-                {data?.ai_text?.split("\n").map((line: string, i: number) => (
-                  <p
-                    key={i}
-                    className={`text-[15px] leading-relaxed font-medium ${
-                      line.includes("注意") || line.includes("重要")
-                        ? "text-amber-600 font-bold bg-amber-50/50 p-6 rounded-[24px] border border-amber-100"
-                        : "text-slate-500"
-                    }`}
-                  >
-                    {line}
-                  </p>
-                ))}
+                {data?.ai_text === "-- AI分析待機中 --" ? (
+                  <div className="flex flex-col items-center justify-center py-12 gap-4">
+                    <Loader2 className="w-8 h-8 text-slate-200 animate-spin" />
+                    <p className="text-[10px] font-black text-slate-300 uppercase tracking-widest">AI分析待機中...</p>
+                  </div>
+                ) : (
+                  data?.ai_text?.split("\n").map((line: string, i: number) => (
+                    <p
+                      key={i}
+                      className={`text-[15px] leading-relaxed font-medium ${
+                        line.includes("注意") || line.includes("重要") || line.includes("⚠️")
+                          ? "text-amber-600 font-bold bg-amber-50/50 p-6 rounded-[24px] border border-amber-100"
+                          : "text-slate-500"
+                      }`}
+                    >
+                      {line}
+                    </p>
+                  ))
+                )}
               </div>
             </div>
           </div>
@@ -408,6 +439,12 @@ function DashboardView({ symbol, data, chartData, margin, setMargin, riskAmount,
         </div>
 
         <MacroPanel macroData={macroData} symbol={symbol} />
+
+        <EdgePanel symbol={symbol} />
+
+        <ForecastChart symbol={symbol} />
+
+        <MoneyManager symbol={symbol} slFromAI={data?.sl} />
       </div>
     </div>
   );
@@ -639,6 +676,30 @@ function HistoryView({ history }: { history: any[] }) {
           ))
         )}
       </div>
+    </div>
+  );
+}
+
+function ScannerView({ setActiveSymbol }: { setActiveSymbol: (s: string) => void }) {
+  return (
+    <div className="space-y-10 animate-in slide-in-from-bottom-12 duration-1000">
+      <div className="px-6">
+        <h2 className="text-6xl font-black tracking-tighter text-slate-900 uppercase">Scanner</h2>
+        <p className="text-slate-400 text-lg font-medium tracking-[0.2em] mt-4 uppercase">全銘柄 Edge Score ランキング</p>
+      </div>
+      <ScannerRanking />
+    </div>
+  );
+}
+
+function AccuracyView() {
+  return (
+    <div className="space-y-10 animate-in slide-in-from-bottom-12 duration-1000">
+      <div className="px-6">
+        <h2 className="text-6xl font-black tracking-tighter text-slate-900 uppercase">Accuracy</h2>
+        <p className="text-slate-400 text-lg font-medium tracking-[0.2em] mt-4 uppercase">予測精度トラッカー</p>
+      </div>
+      <AccuracyTracker />
     </div>
   );
 }
