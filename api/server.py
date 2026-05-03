@@ -107,53 +107,60 @@ async def estimation_loop():
                 sym = res["symbol"]
                 chart_data[sym] = res["charts"]
                 
+                # マーケットが開いているかチェック
+                is_open = fetcher.is_market_open(sym)
+                
                 # UIの状態更新 (データ取得直後)
                 for tf in TIMEFRAMES:
+                    status_text = res["mtf"].get(tf, {}).get("status", "Wait") if is_open else "Closed"
                     system_state[sym][tf].update({
-                        "status": res["mtf"].get(tf, {}).get("status", "Wait"),
-                        "score": res["mtf"].get(tf, {}).get("score", 0)
+                        "status": status_text,
+                        "score": res["mtf"].get(tf, {}).get("score", 0) if is_open else 0
                     })
 
-                # Gemini 生分析の実行 (1銘柄ずつ丁寧に)
-                print(f"[Gemini] Analyzing {sym}...")
-                ai_data = ai_analyzer.analyze_single(sym, res)
-                
-                if ai_data and "ai_text" in ai_data:
-                    # グローバルテーマを最新の分析で更新 (最初の成功銘柄を代表とする)
-                    if market_overview["last_update_ts"] < int(time.time()) - 300:
-                        market_overview["global_theme"] = ai_data["ai_text"][:100] + "..."
-                        market_overview["last_update_ts"] = int(time.time())
+                # Gemini 生分析の実行 (オープン中のみ、または仮想通貨)
+                if is_open:
+                    print(f"[Gemini] Analyzing {sym}...")
+                    ai_data = ai_analyzer.analyze_single(sym, res)
+                    
+                    if ai_data and "ai_text" in ai_data:
+                        # グローバルテーマを最新の分析で更新
+                        if market_overview["last_update_ts"] < int(time.time()) - 300:
+                            market_overview["global_theme"] = ai_data["ai_text"][:100] + "..."
+                            market_overview["last_update_ts"] = int(time.time())
 
-                    # 分析成功時のみ状態を上書きし、DB保存
-                    for tf in TIMEFRAMES:
-                        system_state[sym][tf].update({
-                            "ai_text": ai_data["ai_text"],
-                            "predicted_price": ai_data.get("predicted_price", 0),
-                            "probability": ai_data.get("probability", 0),
-                            "last_updated": datetime.now().isoformat()
-                        })
-                    
-                    # 履歴保存
-                    try:
-                        db.save_prediction({
-                            "symbol": sym,
-                            "status": system_state[sym]["1m"]["status"],
-                            "score": system_state[sym]["1m"]["score"],
-                            "ai_text": ai_data["ai_text"],
-                            "predicted_price": ai_data.get("predicted_price", 0),
-                            "probability": ai_data.get("probability", 0)
-                        })
-                    except Exception as db_e:
-                        print(f"[Loop] DB Save Error for {sym}: {db_e}")
-                    
-                    # 通知
-                    if system_state[sym]["1m"]["score"] >= 80:
-                        notifier.notify_if_needed(sym, res["result_obj"], ai_data, price_cache[sym])
+                        for tf in TIMEFRAMES:
+                            system_state[sym][tf].update({
+                                "ai_text": ai_data["ai_text"],
+                                "predicted_price": ai_data.get("predicted_price", 0),
+                                "probability": ai_data.get("probability", 0),
+                                "last_updated": datetime.now().isoformat()
+                            })
+                        
+                        # 履歴保存
+                        try:
+                            db.save_prediction({
+                                "symbol": sym,
+                                "status": system_state[sym]["1m"]["status"],
+                                "score": system_state[sym]["1m"]["score"],
+                                "ai_text": ai_data["ai_text"],
+                                "predicted_price": ai_data.get("predicted_price", 0),
+                                "probability": ai_data.get("probability", 0)
+                            })
+                        except Exception as db_e:
+                            print(f"[Loop] DB Save Error for {sym}: {db_e}")
+                        
+                        # 通知
+                        if system_state[sym]["1m"]["score"] >= 80:
+                            notifier.notify_if_needed(sym, res["result_obj"], ai_data, price_cache[sym])
+                    else:
+                        print(f"[Loop] AI Analysis failed or skipped for {sym}.")
                 else:
-                    print(f"[Loop] AI Analysis failed for {sym}. Skipping persistence.")
+                    print(f"[Market] {sym} is CLOSED. Skipping deep analysis until Monday.")
 
-                # レート制限を回避するためのウェイト
-                await asyncio.sleep(2.5)
+                # レート制限を回避するためのウェイト (銘柄ごと)
+                if is_open:
+                    await asyncio.sleep(2.5)
 
             # Render生存戦略
             if os.environ.get("RENDER_EXTERNAL_URL"):
