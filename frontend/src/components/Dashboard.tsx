@@ -61,7 +61,7 @@ export default function Dashboard() {
   const [margin, setMargin] = useState<number>(1000000);
   const [isWakingUp, setIsWakingUp] = useState(false);
 
-  // ページ表示直後にバックエンドをウォームアップ (Renderのコールドスタート対策)
+  // ページ表示直後にバックエンドをウォームアップ
   useEffect(() => {
     setIsWakingUp(true);
     fetch("/api/warmup")
@@ -69,21 +69,34 @@ export default function Dashboard() {
       .catch(() => setIsWakingUp(false));
   }, []);
 
-  const { data, error, isLoading } = useSWR(`${API_URL}/api/predict?tf=${activeTF}`, fetcher, {
-    refreshInterval: 30000,
+  // SWR設定: キャッシュ優先で画面が真っ白にならない
+  const swrConfig = {
     revalidateOnFocus: true,
+    revalidateOnReconnect: true,
     shouldRetryOnError: true,
-    errorRetryCount: 5,
-    errorRetryInterval: 3000
-  });
-  
-  const { data: chartData } = useSWR(`${API_URL}/api/chart/${activeSymbol}?tf=${activeTF}`, fetcher, {
-    refreshInterval: 60000,
-  });
+    errorRetryCount: 8,
+    errorRetryInterval: 5000,
+    dedupingInterval: 10000,      // 10秒以内の重複リクエストを防ぐ
+    keepPreviousData: true,       // ★ 新データ取得中も古いデータを表示し続ける
+  };
 
-  const { data: historyData } = useSWR(`${API_URL}/api/history`, fetcher, {
-    refreshInterval: 60000,
-  });
+  const { data, error, isLoading } = useSWR(
+    `${API_URL}/api/predict?tf=${activeTF}`,
+    fetcher,
+    { ...swrConfig, refreshInterval: 20000 }  // 20秒ごとに更新
+  );
+
+  const { data: chartData } = useSWR(
+    `${API_URL}/api/chart/${activeSymbol}?tf=${activeTF}`,
+    fetcher,
+    { ...swrConfig, refreshInterval: 60000 }
+  );
+
+  const { data: historyData } = useSWR(
+    `${API_URL}/api/history`,
+    fetcher,
+    { ...swrConfig, refreshInterval: 120000 }  // 2分ごと（重いので抑制）
+  );
 
   const isConnected = !error && !isLoading && !!data;
 
