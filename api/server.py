@@ -2,6 +2,7 @@ import asyncio
 import os
 import json
 import time
+import traceback
 import pandas as pd
 from datetime import datetime
 from fastapi import FastAPI, Request, Query
@@ -89,7 +90,6 @@ async def analyze_symbol(symbol: str):
 
 async def estimation_loop():
     print("[Server] ONO High-Precision Autonomous Engine Started.")
-    import traceback
     
     # 起動直後に最初の分析を即座に実行
     print("[Loop] Initial sync triggered...")
@@ -133,20 +133,19 @@ async def estimation_loop():
                         market_overview["last_update_ts"] = int(time.time())
                         
                         for sym in target_symbols:
-                            ui_sym = sym.replace("=X", "").replace("-USD", "").replace("^N", "JP").replace("GC=F", "GOLD")
                             # キーの正規化 (AIが返すキーに合わせる)
                             matching_key = next((k for k in ai_results.keys() if k in sym or sym in k), None)
                             
-                                if matching_key:
-                                    ai_data = ai_results[matching_key]
-                                    fallback_text = f"【テクニカル分析】スコア: {system_state[sym]['1m']['score']}% / RSI: {batch_metrics[sym]['mtf'].get('1m', {}).get('rsi')}"
-                                    for tf in TIMEFRAMES:
-                                        system_state[sym][tf].update({
-                                            "ai_text": ai_data.get("ai_text") or fallback_text,
-                                            "predicted_price": ai_data.get("predicted_price", 0),
-                                            "probability": ai_data.get("probability", 0),
-                                            "last_updated": datetime.now().isoformat()
-                                        })
+                            if matching_key:
+                                ai_data = ai_results[matching_key]
+                                fallback_text = f"【テクニカル分析】スコア: {system_state[sym]['1m']['score']}% / RSI: {batch_metrics[sym]['mtf'].get('1m', {}).get('rsi')}"
+                                for tf in TIMEFRAMES:
+                                    system_state[sym][tf].update({
+                                        "ai_text": ai_data.get("ai_text") or fallback_text,
+                                        "predicted_price": ai_data.get("predicted_price", 0),
+                                        "probability": ai_data.get("probability", 0),
+                                        "last_updated": datetime.now().isoformat()
+                                    })
                                 
                                 # 通知としきい値保存 (50%以上で保存、80%以上で通知)
                                 if system_state[sym]["1m"]["score"] >= 80:
