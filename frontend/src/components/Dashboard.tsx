@@ -337,8 +337,16 @@ export default function Dashboard() {
     { ...swrOpts, refreshInterval: 30000 }
   );
   const { data: historyRaw } = useSWR(
-    `${API_URL}/api/backtest/results`, fetcher,
-    { ...swrOpts, refreshInterval: 300000 }
+    `${API_URL}/api/performance/summary`, fetcher,
+    { ...swrOpts, refreshInterval: 120000 }
+  );
+  const { data: confluenceRaw } = useSWR(
+    `${API_URL}/api/confluence`, fetcher,
+    { ...swrOpts, refreshInterval: 30000 }
+  );
+  const { data: dailyRaw } = useSWR(
+    `${API_URL}/api/daily/status`, fetcher,
+    { ...swrOpts, refreshInterval: 60000 }
   );
 
   const isConnected = !error && !isLoading;
@@ -357,6 +365,16 @@ export default function Dashboard() {
   const aligned = current?.aligned ?? 0;
   const confidence = current?.confidence || "LOW";
 
+  // Confluence
+  const symKey = activeSymbol;
+  const confluence = confluenceRaw?.[symKey] || {};
+  const confluenceScore = confluence?.confluence_score ?? 0;
+  const confluenceDominant = confluence?.dominant ?? "WAIT";
+  const isMaxConfluence = confluence?.is_max_confluence ?? false;
+
+  // Daily lock
+  const isDailyLocked = dailyRaw?.locked ?? false;
+
   // Money calc
   const m = parseInt(margin.replace(/,/g,"")) || 1000000;
   const riskPct = score >= 80 ? 2 : score >= 60 ? 1 : 0.5;
@@ -364,8 +382,8 @@ export default function Dashboard() {
   const recLot = (riskAmt / 5000).toFixed(2);
 
   // Win rate
-  const wr = historyRaw?.win_rate ?? historyRaw?.overall_win_rate ?? null;
-  const totalTrades = historyRaw?.total_trades ?? historyRaw?.total ?? null;
+  const wr = historyRaw?.win_rate ?? null;
+  const totalTrades = historyRaw?.total_trades ?? null;
 
   return (
     <div style={{
@@ -448,6 +466,29 @@ export default function Dashboard() {
           </button>
         </div>
       </header>
+
+      {/* ─── Daily Lock Banner ── */}
+      {isDailyLocked && (
+        <div style={{
+          background: "rgba(245,158,11,0.15)", borderBottom: "1px solid rgba(245,158,11,0.3)",
+          padding: "10px 24px", textAlign: "center",
+          fontSize: 13, color: "#f59e0b", fontWeight: 700,
+        }}>
+          ⚠️ 本日の利益目標を達成しました。規律を守り、新規エントリーを停止してください。
+        </div>
+      )}
+
+      {/* ─── Max Confluence Flash ── */}
+      {isMaxConfluence && (
+        <div style={{
+          background: "rgba(34,211,238,0.12)", borderBottom: "1px solid rgba(34,211,238,0.4)",
+          padding: "10px 24px", textAlign: "center",
+          fontSize: 13, color: "#22d3ee", fontWeight: 700,
+          animation: "pulse 1s infinite",
+        }}>
+          🚀 全TF完全一致シグナル！{confluenceDominant} — 最高確度のエントリーチャンス
+        </div>
+      )}
 
       {/* ─── Tabs ── */}
       <div style={{
@@ -583,6 +624,44 @@ export default function Dashboard() {
 
             {/* RIGHT */}
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              {/* MTF Confluence */}
+              <div style={{
+                background: confluenceScore >= 5 ? "rgba(34,211,238,0.08)" : "rgba(255,255,255,0.02)",
+                border: `1px solid ${confluenceScore >= 5 ? "rgba(34,211,238,0.3)" : "rgba(255,255,255,0.06)"}`,
+                borderRadius: 16, padding: 16,
+                boxShadow: confluenceScore >= 5 ? "0 0 20px rgba(34,211,238,0.15)" : "none",
+              }}>
+                <div style={{ fontSize: 11, color: "#64748b", letterSpacing: 1, marginBottom: 12, textTransform: "uppercase" }}>
+                  MTF Confluence
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
+                  <div style={{ fontSize: 26, fontWeight: 800, color: dirColor(confluenceDominant) }}>
+                    {confluenceScore}<span style={{ fontSize: 13, color: "#4b5563", fontWeight: 400 }}>/{TIMEFRAMES.length}</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: dirColor(confluenceDominant), fontWeight: 700 }}>
+                    {confluenceDominant}<br />
+                    <span style={{ color: "#64748b", fontWeight: 400 }}>TF一致</span>
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 4 }}>
+                  {TIMEFRAMES.map((tf) => {
+                    const d = confluence?.by_tf?.[tf] ?? "WAIT";
+                    return (
+                      <div key={tf} style={{
+                        flex: 1, padding: "4px 2px", borderRadius: 6, textAlign: "center",
+                        background: d === "BUY" ? "rgba(34,211,238,0.15)" : d === "SELL" ? "rgba(251,113,133,0.15)" : "rgba(255,255,255,0.04)",
+                        border: `1px solid ${d === "BUY" ? "rgba(34,211,238,0.3)" : d === "SELL" ? "rgba(251,113,133,0.3)" : "rgba(255,255,255,0.06)"}`,
+                      }}>
+                        <div style={{ fontSize: 9, color: "#64748b" }}>{tf}</div>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: dirColor(d) }}>
+                          {d === "BUY" ? "▲" : d === "SELL" ? "▼" : "─"}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
               {/* Layer breakdown */}
               <div style={{
                 background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",

@@ -149,11 +149,15 @@ _startup_done = False
 # ─── Services ──────────────────────────────────────────────────
 fetcher     = HybridDataFetcher()
 engine_v2   = ONOPredictionEngineV2() if _V2 else None
-ai_analyzer = GeminiAnalyzer()
-notifier    = Notifier()
 db          = SupabaseClient()
+ai_analyzer = GeminiAnalyzer(db=db)   # db渡してAI Memoryを有効化
+notifier    = Notifier(db=db)
 backtester  = Backtester(db, price_cache) if _HAS_BACKTEST else None
 trade_mon   = TradeMonitor(db, notifier) if _HAS_MONITOR else None
+
+# ─── 日次目標管理 ───────────────────────────────────────────────
+DAILY_PROFIT_TARGET = float(os.environ.get("DAILY_PROFIT_TARGET_JPY", "0"))
+_daily_pnl_cache   = {"date": "", "pnl": 0.0, "locked": False}
 
 
 # ─── ユーティリティ ────────────────────────────────────────────
@@ -230,7 +234,9 @@ def _get_feedback(sym: str) -> str:
         history = db.get_history(limit=100)
         key = _short(sym)
         rows = [r for r in history if key in r.get("symbol", "")]
-        if not rows: return db.get_performance_summary()
+        if not rows:
+            perf = db.get_performance_text() if hasattr(db, "get_performance_text") else ""
+            return perf or "学習データ蓄積中..."
         scored  = [r for r in rows if r.get("is_scored")]
         correct = [r for r in rows if r.get("is_correct")]
         wr = round(len(correct)/len(scored)*100,1) if scored else None
@@ -240,6 +246,64 @@ def _get_feedback(sym: str) -> str:
             lines.append(f"  {r.get('status','?')} score:{r.get('score',0)} {tag}")
         return "\n".join(lines)
     except Exception as e: return f"History error: {e}"
+
+
+def _check_daily_lock() -> bool:
+    """日次目標達成チェック"""
+    global _daily_pnl_cache
+    if DAILY_PROFIT_TARGET <= 0:
+        return False
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    if _daily_pnl_cache["date"] != today:
+        _daily_pnl_cache = {"date": today, "pnl": 0.0, "locked": False}
+    if _daily_pnl_cache["locked"]:
+        return True
+    try:
+        perf = db.get_performance_summary()
+        pips = perf.get("total_pips", 0)
+        est_pnl = pips * 1000  # 簡易換算（USDJPY 1pip=1000円/lot）
+        _daily_pnl_cache["pnl"] = est_pnl
+        if est_pnl >= DAILY_PROFIT_TARGET:
+            _daily_pnl_cache["locked"] = True
+            print(f"[DailyLock] 目標達成 ¥{est_pnl:,.0f} >= ¥{DAILY_PROFIT_TARGET:,.0f}")
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _calc_mtf_confluence(sym: str) -> dict:
+    """全TFの方向一致スコアを計算"""
+    directions = {}
+    for tf in TIMEFRAMES:
+        state = system_state.get(sym, {}).get(tf, {})
+        d = state.get("direction") or state.get("status", "WAIT")
+        if "BUY" in str(d).upper():
+            directions[tf] = "BUY"
+        elif "SELL" in str(d).upper():
+            directions[tf] = "SELL"
+        else:
+            directions[tf] = "WAIT"
+    buys  = sum(1 for v in directions.values() if v == "BUY")
+    sells = sum(1 for v in directions.values() if v == "SELL")
+    total = len(TIMEFRAMES)
+    if buys > sells:
+        dominant = "BUY"
+        score = buys
+    elif sells > buys:
+        dominant = "SELL"
+        score = sells
+    else:
+        dominant = "WAIT"
+        score = 0
+    return {
+        "dominant": dominant,
+        "confluence_score": score,
+        "total_tfs": total,
+        "by_tf": directions,
+        "is_max_confluence": score == total,
+        "pct": round(score / total * 100, 0) if total else 0,
+    }
 
 
 # ─── コア分析（blocking） ───────────────────────────────────────
@@ -386,23 +450,35 @@ async def estimation_loop():
                                 })
                             ref_state = system_state[sym][ANALYSIS_TF]
                             db.save_prediction({
-                                "symbol": sym,
-                                "status": ref_state.get("status", "Wait"),
-                                "score":  ref_state.get("score", 0),
-                                "ai_text": ai_data.get("ai_text", ""),
-                                "predicted_price": ai_data.get("entry", 0) or 0,
-                                "probability": ai_data.get("probability", 0),
+                                "symbol":        sym,
+                                "timeframe":     ANALYSIS_TF,
+                                "status":        ref_state.get("status", "Wait"),
+                                "score":         ref_state.get("score", 0),
+                                "ai_text":       ai_data.get("ai_text", ""),
+                                "entry":         ai_data.get("entry") or 0,
+                                "tp1":           ai_data.get("tp1") or 0,
+                                "tp2":           ai_data.get("tp2") or 0,
+                                "sl":            ai_data.get("sl") or 0,
+                                "probability":   ai_data.get("probability", 0),
                                 "current_price": price_cache.get(sym, 0),
+                                "layers":        ref_state.get("layers", {}),
+                                "aligned":       ref_state.get("aligned", 0),
+                                "session":       ref_state.get("session", "off"),
                             })
                             if market_overview["last_update_ts"] < time.time() - 120:
                                 market_overview["global_theme"] = ai_data.get("ai_text","")[:80] + "..."
                                 market_overview["last_update_ts"] = int(time.time())
 
-                            # 通知判定
+                            # 通知判定: confidence>=75% or (score>=35 & prob>=80 & aligned>=3)
                             score = ref_state.get("score", 0)
                             prob  = ai_data.get("probability", 0)
                             algn  = ref_state.get("aligned", 0)
-                            if abs(score) >= 35 and prob >= 80 and algn >= 3:
+                            conf  = ai_data.get("confidence", "LOW")
+                            is_locked = _check_daily_lock()
+                            if not is_locked and (
+                                (conf == "HIGH" and prob >= 75) or
+                                (abs(score) >= 35 and prob >= 80 and algn >= 3)
+                            ):
                                 try:
                                     notifier.notify(sym, ref_state, ai_data)
                                 except Exception: pass
@@ -468,12 +544,62 @@ async def anti_sleep_loop():
         await asyncio.sleep(240)
 
 
+async def auto_evaluate_loop():
+    """バックテスト自動評価 + AI自己反省ループ (1時間毎)"""
+    await asyncio.sleep(300)
+    while True:
+        try:
+            # 未採点予測を評価
+            unscored = db.get_unscored_predictions()
+            evaluated = 0
+            for row in unscored:
+                sym_short = row.get("symbol", "")
+                ticker = next((k for k, v in SYM_SHORT.items() if v == sym_short), sym_short)
+                cur_price = price_cache.get(ticker, 0)
+                if not cur_price: continue
+                entry = row.get("entry_price") or 0
+                direction = row.get("direction", "WAIT")
+                if not entry or direction == "WAIT": continue
+                if direction == "BUY":
+                    pips = (cur_price - entry) * 10000
+                    outcome = "WIN" if cur_price > entry else "LOSS"
+                else:
+                    pips = (entry - cur_price) * 10000
+                    outcome = "WIN" if cur_price < entry else "LOSS"
+                db.update_prediction_result(row["id"], cur_price, outcome == "WIN", outcome)
+                db.save_performance(
+                    prediction_id=row["id"], symbol=sym_short, direction=direction,
+                    entry_price=entry, exit_price=cur_price, outcome=outcome, pips_result=pips,
+                )
+                evaluated += 1
+            if evaluated > 0:
+                print(f"[AutoEval] {evaluated}件 採点完了")
+                perf = db.get_performance_summary()
+                market_overview["history_stats"] = _load_history_stats()
+                # 負けが多い場合はAI反省を生成
+                wr = perf.get("win_rate", 0)
+                if wr < 55:
+                    for sym in ["ALL"] + [_short(s) for s in SYMBOLS[:3]]:
+                        try:
+                            losses = [l for l in perf.get("logs", []) if l.get("outcome") == "LOSS"][:5]
+                            if losses:
+                                lesson = ai_analyzer.generate_self_reflection(sym, losses)
+                                if lesson:
+                                    ai_analyzer.save_ai_lesson(sym, lesson, wr)
+                                    print(f"[AIReflect] {sym}: {lesson[:50]}...")
+                        except Exception: pass
+        except Exception as e:
+            print(f"[AutoEval] Error: {e}")
+        await asyncio.sleep(3600)  # 1時間毎
+
+
 @app.on_event("startup")
 async def startup():
     asyncio.create_task(estimation_loop())
     asyncio.create_task(backtest_loop())
     asyncio.create_task(trade_monitor_loop())
     asyncio.create_task(scanner_loop())
+    asyncio.create_task(auto_evaluate_loop())
     asyncio.create_task(anti_sleep_loop())
 
 
@@ -811,3 +937,145 @@ def debug_sources():
         "gemini_calls_last_min": len(_gemini_times),
         "startup_done": _startup_done,
     }
+
+
+# ─── 新規エンドポイント ─────────────────────────────────────────
+
+@app.get("/api/performance/summary")
+def performance_summary():
+    """パフォーマンス集計 (performance_logから)"""
+    try:
+        summary = db.get_performance_summary()
+        summary["daily_lock"] = _check_daily_lock()
+        summary["daily_target"] = DAILY_PROFIT_TARGET
+        summary["daily_pnl"] = _daily_pnl_cache.get("pnl", 0)
+        return summary
+    except Exception as e:
+        return {"error": str(e), "win_rate": 0, "total_trades": 0}
+
+
+@app.get("/api/confluence/{symbol}")
+def confluence(symbol: str):
+    """MTFコンフルエンス（全TF方向一致スコア）"""
+    mapping = {
+        "USDJPY": "USDJPY=X","GOLD":"GC=F","BTC":"BTC-USD",
+        "JP225":"^N225","XAGUSD":"SI=F","AUDJPY":"AUDJPY=X",
+        "EURUSD":"EURUSD=X","EURJPY":"EURJPY=X",
+    }
+    ticker = mapping.get(symbol.upper(), symbol)
+    return _calc_mtf_confluence(ticker)
+
+
+@app.get("/api/confluence")
+def confluence_all():
+    """全銘柄MTFコンフルエンス"""
+    return {_short(sym): _calc_mtf_confluence(sym) for sym in SYMBOLS}
+
+
+@app.get("/api/signals/history")
+def signals_history(
+    symbol: str = Query(None),
+    direction: str = Query(None),
+    timeframe: str = Query(None),
+    limit: int = Query(50, le=200),
+):
+    """シグナル履歴（フィルタリング対応）"""
+    try:
+        rows = db.get_predictions(
+            symbol=symbol, direction=direction,
+            timeframe=timeframe, limit=limit
+        )
+        return {"count": len(rows), "data": rows}
+    except Exception as e:
+        return {"count": 0, "data": [], "error": str(e)}
+
+
+@app.post("/api/backtest/evaluate")
+async def backtest_evaluate():
+    """バックテスト自動評価: 未採点predictionsを現在価格で評価"""
+    try:
+        unscored = db.get_unscored_predictions()
+        evaluated = 0
+        for row in unscored:
+            sym = row.get("symbol", "")
+            ticker = {v: k for k, v in SYM_SHORT.items()}.get(sym, sym)
+            cur_price = price_cache.get(ticker, 0)
+            if not cur_price:
+                continue
+            entry = row.get("entry_price") or 0
+            direction = row.get("direction", "WAIT")
+            tp1 = row.get("take_profit") or 0
+            sl = row.get("stop_loss") or 0
+            if not entry or direction == "WAIT":
+                continue
+            is_correct = False
+            outcome = "PENDING"
+            pips = 0.0
+            if direction == "BUY":
+                pips = (cur_price - entry) * 10000
+                is_correct = cur_price > entry
+                outcome = "WIN" if is_correct else "LOSS"
+            elif direction == "SELL":
+                pips = (entry - cur_price) * 10000
+                is_correct = cur_price < entry
+                outcome = "WIN" if is_correct else "LOSS"
+            db.update_prediction_result(row["id"], cur_price, is_correct, outcome)
+            db.save_performance(
+                prediction_id=row["id"], symbol=sym, direction=direction,
+                entry_price=entry, exit_price=cur_price,
+                outcome=outcome, pips_result=pips,
+            )
+            evaluated += 1
+        perf = db.get_performance_summary()
+        return {"evaluated": evaluated, "summary": perf}
+    except Exception as e:
+        return {"error": str(e), "evaluated": 0}
+
+
+@app.get("/api/daily/status")
+def daily_status():
+    """日次目標達成状況"""
+    locked = _check_daily_lock()
+    return {
+        "locked": locked,
+        "target_jpy": DAILY_PROFIT_TARGET,
+        "current_pnl": _daily_pnl_cache.get("pnl", 0),
+        "date": _daily_pnl_cache.get("date", ""),
+        "message": "⚠️ 本日の目標達成！新規シグナル停止中" if locked else None,
+    }
+
+
+@app.get("/api/ai/memory/{symbol}")
+def ai_memory(symbol: str):
+    """AI学習メモ取得"""
+    if not db.client:
+        return {"lessons": []}
+    try:
+        res = db.client.table("ai_memory")\
+            .select("*")\
+            .in_("symbol", [symbol.upper(), "ALL"])\
+            .eq("is_active", True)\
+            .order("applied_at", desc=True)\
+            .limit(10).execute()
+        return {"lessons": res.data or []}
+    except Exception as e:
+        return {"lessons": [], "error": str(e)}
+
+
+@app.post("/api/ai/reflect")
+async def ai_reflect(body: dict):
+    """AI自己反省ループのトリガー"""
+    symbol = body.get("symbol", "ALL")
+    try:
+        perf = db.get_performance_summary()
+        wr = perf.get("win_rate", 0)
+        logs = perf.get("logs", [])
+        losses = [l for l in logs if l.get("outcome") == "LOSS"][:5]
+        if not losses:
+            return {"lesson": None, "message": "負けトレードなし"}
+        lesson = ai_analyzer.generate_self_reflection(symbol, losses)
+        if lesson:
+            ai_analyzer.save_ai_lesson(symbol, lesson, wr)
+        return {"lesson": lesson, "win_rate": wr}
+    except Exception as e:
+        return {"error": str(e)}

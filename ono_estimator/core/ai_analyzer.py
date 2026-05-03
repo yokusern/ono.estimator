@@ -1,13 +1,21 @@
 """
-GeminiAnalyzer — E3構造化出力 + 14RPMレートリミット + Supabaseキャッシュ
+GeminiAnalyzer v2 — マルチキーローテーション + モデルフォールバック + E3構造化出力
 """
 import os, json, re, time, logging, traceback
+from typing import Optional, List
 import google.generativeai as genai
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 logger = logging.getLogger(__name__)
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 
+# ─── モデル優先順位 ───────────────────────────────────────────
+MODEL_FALLBACK_ORDER = [
+    os.environ.get("GEMINI_MODEL", "gemini-2.0-flash"),
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+]
+
+# ─── E3出力フォーマット ───────────────────────────────────────
 E3_SUFFIX = """\n\n必ずこのJSONのみで返答（余分なテキスト禁止）:
 {
   "direction": "BUY" or "SELL" or "WAIT",
@@ -25,6 +33,19 @@ E3_SUFFIX = """\n\n必ずこのJSONのみで返答（余分なテキスト禁止
 }"""
 
 
+def _load_api_keys() -> List[str]:
+    """環境変数から複数Gemini APIキーを取得"""
+    keys = []
+    for i in range(1, 10):
+        k = os.environ.get(f"GEMINI_API_KEY_{i}")
+        if k:
+            keys.append(k)
+    single = os.environ.get("GEMINI_API_KEY")
+    if single and single not in keys:
+        keys.append(single)
+    return keys
+
+
 class GeminiAnalyzer:
     _call_times: list = []
     RPM_LIMIT = 14
@@ -32,18 +53,57 @@ class GeminiAnalyzer:
 
     def __init__(self, db=None):
         self.db = db
-        api_key = os.environ.get("GEMINI_API_KEY")
-        if not api_key:
-            print("[Gemini] GEMINI_API_KEY not set. AI disabled.")
+        self._keys = _load_api_keys()
+        self._key_idx = 0
+        self._model_idx = 0
+        self.model = None
+        self._init_model()
+
+    def _init_model(self):
+        """現在のキーとモデルでGenAI初期化"""
+        if not self._keys:
+            print("[Gemini] No API keys found. AI disabled.")
             self.model = None
             return
+        key = self._keys[self._key_idx % len(self._keys)]
+        model_name = MODEL_FALLBACK_ORDER[self._model_idx % len(MODEL_FALLBACK_ORDER)]
         try:
-            genai.configure(api_key=api_key)
-            self.model = genai.GenerativeModel(GEMINI_MODEL)
-            print(f"[Gemini] Configured: {GEMINI_MODEL}")
+            genai.configure(api_key=key)
+            self.model = genai.GenerativeModel(model_name)
+            print(f"[Gemini] key#{self._key_idx+1}/{len(self._keys)} model={model_name}")
         except Exception as e:
-            print(f"[Gemini] Init Error: {e}")
+            print(f"[Gemini] Init error: {e}")
             self.model = None
+
+    def _rotate_key(self, error_type: str = "EXHAUSTED"):
+        """次のAPIキーへ切り替え。全キー枯渇時はモデルをフォールバック"""
+        self._log_health(self._key_idx, error_type)
+        self._key_idx += 1
+        if self._key_idx >= len(self._keys):
+            self._key_idx = 0
+            self._model_idx += 1
+            if self._model_idx >= len(MODEL_FALLBACK_ORDER):
+                self._model_idx = 0
+                print("[Gemini] All keys & models exhausted. Using cache.")
+                self.model = None
+                return
+            print(f"[Gemini] All keys exhausted → fallback model: {MODEL_FALLBACK_ORDER[self._model_idx]}")
+        self._init_model()
+
+    def _log_health(self, key_idx: int, error_type: str):
+        """system_healthテーブルへ記録"""
+        if not self.db or not self.db.client:
+            return
+        try:
+            model_name = MODEL_FALLBACK_ORDER[self._model_idx % len(MODEL_FALLBACK_ORDER)]
+            self.db.client.table("system_health").insert({
+                "api_key_index": key_idx,
+                "status": "EXHAUSTED" if "exhaust" in error_type.lower() else "ERROR",
+                "error_type": error_type[:200],
+                "model_fallback": model_name,
+            }).execute()
+        except Exception:
+            pass
 
     def _rate_limit(self):
         now = time.time()
@@ -59,90 +119,209 @@ class GeminiAnalyzer:
                 time.sleep(self.MIN_INTERVAL - elapsed)
         GeminiAnalyzer._call_times.append(time.time())
 
-    @retry(
-        stop=stop_after_attempt(4),
-        wait=wait_exponential(multiplier=1, min=2, max=30),
-        reraise=False,
-    )
-    def _call_api(self, prompt: str):
+    def _call_api_inner(self, prompt: str):
         self._rate_limit()
         return self.model.generate_content(prompt)
 
+    def _call_with_failover(self, prompt: str, max_attempts: int = 6):
+        """ResourceExhausted → 自動キーローテーション"""
+        for attempt in range(max_attempts):
+            if not self.model:
+                return None
+            try:
+                return self._call_api_inner(prompt)
+            except Exception as e:
+                err_str = str(e).lower()
+                if "resource_exhausted" in err_str or "429" in err_str or "quota" in err_str:
+                    print(f"[Gemini] Exhausted (attempt {attempt+1}): rotating key")
+                    self._rotate_key("ResourceExhausted")
+                    if not self.model:
+                        return None
+                    time.sleep(2 ** attempt)
+                elif "invalid_argument" in err_str or "400" in err_str:
+                    logger.warning(f"[Gemini] Invalid request: {e}")
+                    return None
+                else:
+                    logger.warning(f"[Gemini] API error (attempt {attempt+1}): {e}")
+                    time.sleep(min(30, 2 ** attempt))
+        return None
+
+    def _parse_e3(self, text: str) -> Optional[dict]:
+        """E3 JSON抽出"""
+        try:
+            m = re.search(r'\{[\s\S]*\}', text)
+            if m:
+                return json.loads(m.group())
+        except Exception:
+            pass
+        return None
+
     def analyze_single(self, symbol: str, data: dict, feedback: str = "",
-                       gemini_prompt_override: str = None) -> dict | None:
+                       gemini_prompt_override: str = None) -> dict:
         if not self.model:
-            return self._load_cache(symbol) or self._fallback()
+            cached = self._load_cache(symbol)
+            return {**(cached or {}), **self._fallback(), "cached": bool(cached)}
 
         try:
+            # AI memoryから学習内容を取得
+            memory_context = self._get_ai_memory(symbol)
+
             if gemini_prompt_override:
-                prompt = gemini_prompt_override + E3_SUFFIX
+                prompt = gemini_prompt_override
+                if memory_context:
+                    prompt += f"\n\n【過去の学習内容】\n{memory_context}"
+                prompt += E3_SUFFIX
             else:
                 mtf = data.get("mtf", {})
-                h1 = mtf.get("1h", {})
-                m1 = mtf.get("1m", {})
-                prompt = f"""Return ONLY JSON. Analyze {symbol} as a quantitative FX strategist.
-[Data] 1m:Score={m1.get('score')} RSI={m1.get('rsi')} | 1h:Score={h1.get('score')} Layers={h1.get('aligned',0)}/5
-[Engine] {h1.get('status','?')} {h1.get('emoji','⚪')} | TP1={h1.get('tp1',0)} TP2={h1.get('tp2',0)} SL={h1.get('sl',0)}
-[History] {feedback or 'No data'}
-{E3_SUFFIX}"""
+                layers = data.get("layers", {})
+                price = data.get("price", 0)
+                atr = data.get("atr", 0)
 
-            resp = self._call_api(prompt)
-            if not resp:
-                raise RuntimeError("API returned None")
+                prompt = f"""ONO Estimator — {symbol} 分析リクエスト
 
-            result = self._parse(resp.text)
-            if result:
+現在価格: {price:.5f}
+ATR: {atr:.5f}
+
+5-Layerスコア:
+- SMC: {layers.get('smc', 0):.1f}
+- Technical: {layers.get('technical', 0):.1f}
+- Fundamental: {layers.get('fundamental', 0):.1f}
+- Momentum: {layers.get('momentum', 0):.1f}
+- Correlation: {layers.get('correlation', 0):.1f}
+
+MTF整合:
+{json.dumps(mtf, ensure_ascii=False, indent=2)}
+
+{feedback}
+"""
+                if memory_context:
+                    prompt += f"\n【AI学習メモ】\n{memory_context}\n"
+                prompt += E3_SUFFIX
+
+            response = self._call_with_failover(prompt)
+            if not response:
+                cached = self._load_cache(symbol)
+                return {**(cached or {}), **self._fallback(), "cached": bool(cached)}
+
+            raw_text = response.text
+            parsed = self._parse_e3(raw_text)
+
+            if parsed:
+                result = {
+                    "direction":          parsed.get("direction", "WAIT"),
+                    "probability":        int(parsed.get("probability", 0)),
+                    "expected_move_pips": parsed.get("expected_move_pips"),
+                    "time_window":        parsed.get("time_window", {}),
+                    "hold_time_minutes":  parsed.get("hold_time_minutes"),
+                    "entry":              parsed.get("entry"),
+                    "tp1":                parsed.get("tp1"),
+                    "tp2":                parsed.get("tp2"),
+                    "sl":                 parsed.get("sl"),
+                    "basis":              parsed.get("basis", ""),
+                    "confidence":         parsed.get("confidence", "LOW"),
+                    "ai_text":            parsed.get("ai_text", raw_text[:500]),
+                    "cached":             False,
+                    "raw":                raw_text[:200],
+                }
                 self._save_cache(symbol, result)
                 return result
-
-            print(f"[Gemini] Parse failed {symbol}: {resp.text[:100]}")
-            return self._load_cache(symbol) or self._fallback()
+            else:
+                return {"ai_text": raw_text[:500], "direction": "WAIT",
+                        "probability": 0, "cached": False}
 
         except Exception as e:
-            print(f"[Gemini] Error {symbol}: {e}")
-            return self._load_cache(symbol) or self._fallback()
+            logger.error(f"[Gemini] analyze_single error: {e}")
+            cached = self._load_cache(symbol)
+            return {**(cached or {}), **self._fallback(), "cached": True}
 
-    def _parse(self, text: str) -> dict | None:
+    def _get_ai_memory(self, symbol: str) -> str:
+        """ai_memoryテーブルから最新の学習内容を取得"""
+        if not self.db or not self.db.client:
+            return ""
         try:
-            text = re.sub(r"```json?\s*", "", text).replace("```", "")
-            m = re.search(r"\{[\s\S]*\}", text)
-            if not m:
-                return None
-            d = json.loads(m.group())
-            if "direction" not in d:
-                return None
-            if not d.get("ai_text") and d.get("basis"):
-                d["ai_text"] = (f"【論理解説】{d['basis']}\n"
-                                f"【戦略】Entry:{d.get('entry','N/A')} / TP:{d.get('tp2','N/A')} / SL:{d.get('sl','N/A')}")
-            return d
+            res = self.db.client.table("ai_memory")\
+                .select("lesson")\
+                .eq("is_active", True)\
+                .in_("symbol", [symbol, "ALL"])\
+                .order("applied_at", desc=True)\
+                .limit(3).execute()
+            lessons = [r["lesson"] for r in (res.data or []) if r.get("lesson")]
+            return "\n".join(lessons)
         except Exception:
-            return None
+            return ""
 
-    def _save_cache(self, symbol: str, result: dict):
-        if not self.db:
+    def save_ai_lesson(self, symbol: str, lesson: str, win_rate: float):
+        """AI反省をai_memoryに保存"""
+        if not self.db or not self.db.client:
             return
         try:
-            self.db.client.table("analysis_cache").insert({"symbol": symbol, "result": result}).execute()
+            self.db.client.table("ai_memory").insert({
+                "symbol": symbol,
+                "lesson": lesson[:500],
+                "win_rate_at_time": win_rate,
+                "is_active": True,
+            }).execute()
+        except Exception as e:
+            logger.warning(f"[AI Memory] Save error: {e}")
+
+    def generate_self_reflection(self, symbol: str, losses: list) -> Optional[str]:
+        """敗北シグナルを分析してAIが自己反省を生成"""
+        if not self.model or not losses:
+            return None
+        try:
+            loss_summary = "\n".join([
+                f"- {l.get('direction','?')} @ {l.get('entry_price','?')} → {l.get('outcome','?')} ({l.get('pips_result',0):.1f} pips)"
+                for l in losses[:5]
+            ])
+            prompt = f"""{symbol} の直近の負けトレードを分析し、なぜ外れたかを日本語100字以内で反省してください。
+負けトレード:
+{loss_summary}
+
+出力: 反省文のみ（JSON不要、100字以内）"""
+            resp = self._call_with_failover(prompt)
+            if resp:
+                return resp.text[:200]
+        except Exception as e:
+            logger.warning(f"[AI Reflection] Error: {e}")
+        return None
+
+    def _save_cache(self, symbol: str, result: dict):
+        if not self.db or not self.db.client:
+            return
+        try:
+            self.db.client.table("predictions").upsert({
+                "symbol": symbol,
+                "timeframe": "CACHE",
+                "direction": result.get("direction", "WAIT"),
+                "confidence": result.get("probability", 0),
+                "ai_reasoning": result.get("ai_text", ""),
+                "layer_scores": result,
+            }, on_conflict="symbol,timeframe").execute()
         except Exception:
             pass
 
-    def _load_cache(self, symbol: str) -> dict | None:
-        if not self.db:
+    def _load_cache(self, symbol: str) -> Optional[dict]:
+        if not self.db or not self.db.client:
             return None
         try:
-            from datetime import datetime, timedelta, timezone
-            cutoff = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
-            res = (self.db.client.table("analysis_cache").select("result")
-                   .eq("symbol", symbol).gte("created_at", cutoff)
-                   .order("created_at", desc=True).limit(1).execute())
+            res = self.db.client.table("predictions")\
+                .select("*")\
+                .eq("symbol", symbol)\
+                .eq("timeframe", "CACHE")\
+                .order("created_at", desc=True)\
+                .limit(1).execute()
             if res.data:
-                r = res.data[0]["result"]
-                r["cached"] = True
-                return r
+                row = res.data[0]
+                scores = row.get("layer_scores") or {}
+                if isinstance(scores, str):
+                    scores = json.loads(scores)
+                return {**scores, "cached": True}
         except Exception:
             pass
         return None
 
     def _fallback(self) -> dict:
-        return {"direction": "WAIT", "probability": 0,
-                "ai_text": "-- AI分析待機中 --", "basis": "", "cached": False}
+        return {
+            "direction": "WAIT", "probability": 0, "confidence": "LOW",
+            "ai_text": "-- AI分析待機中 --", "cached": False,
+        }
