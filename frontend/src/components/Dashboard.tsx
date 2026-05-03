@@ -17,10 +17,26 @@ import dynamic from "next/dynamic";
 
 const TradingViewChart = dynamic(() => import("./TradingViewChart"), { ssr: false });
 
-const fetcher = (url: string) => fetch(url).then((res) => {
-  if (!res.ok) throw new Error("API Connection Failed");
-  return res.json();
-});
+const fetcher = async (url: string) => {
+  let retries = 3;
+  while (retries > 0) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) return res.json();
+      if (res.status === 503 || res.status === 504) {
+        // Backend might be waking up
+        await new Promise(r => setTimeout(r, 2000));
+        retries--;
+        continue;
+      }
+      throw new Error("API Connection Failed");
+    } catch (err) {
+      if (retries === 1) throw err;
+      await new Promise(r => setTimeout(r, 2000));
+      retries--;
+    }
+  }
+};
 
 // デフォルトURLを環境変数またはRenderの想定URLに設定
 const API_URL = (
@@ -41,7 +57,8 @@ export default function Dashboard() {
     refreshInterval: 30000,
     revalidateOnFocus: true,
     shouldRetryOnError: true,
-    errorRetryCount: 3
+    errorRetryCount: 5,
+    errorRetryInterval: 3000
   });
   
   const { data: chartData } = useSWR(`${API_URL}/api/chart/${activeSymbol}?tf=${activeTF}`, fetcher, {
@@ -56,9 +73,9 @@ export default function Dashboard() {
 
   const currentData = useMemo(() => {
     return data?.data?.[activeSymbol] || {
-      status: "Analyzing",
+      status: "Syncing",
       score: 0,
-      ai_text: "Intelligence Synchronizing...",
+      ai_text: "AI Intelligence Synchronizing...",
       predicted_price: 0,
       probability: 0
     };
@@ -76,13 +93,26 @@ export default function Dashboard() {
 
   if (isLoading && !data) {
     return (
-      <div className="min-h-screen bg-white flex items-center justify-center">
-        <div className="flex flex-col items-center gap-6">
-          <div className="relative">
-            <BrainCircuit className="w-16 h-16 text-sky-500 animate-pulse" />
-            <Loader2 className="w-20 h-20 text-sky-100 animate-spin absolute -top-2 -left-2" />
+      <div className="min-h-screen bg-white flex flex-col items-center justify-center p-12">
+        <div className="w-full max-w-4xl space-y-12 animate-pulse">
+          <div className="flex items-center justify-between mb-20">
+             <div className="flex items-center gap-4">
+                <div className="w-12 h-12 bg-slate-100 rounded-2xl" />
+                <div className="space-y-2">
+                  <div className="w-32 h-4 bg-slate-100 rounded-full" />
+                  <div className="w-20 h-2 bg-slate-50 rounded-full" />
+                </div>
+             </div>
+             <div className="w-40 h-10 bg-slate-100 rounded-full" />
           </div>
-          <span className="text-xs font-black uppercase tracking-[0.6em] text-slate-300">Initializing Intelligence</span>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-10">
+            <div className="col-span-1 h-80 bg-slate-50 rounded-[48px]" />
+            <div className="col-span-2 h-80 bg-slate-100/50 rounded-[48px]" />
+          </div>
+          <div className="flex flex-col items-center gap-4 pt-12">
+            <BrainCircuit className="w-8 h-8 text-sky-200 animate-bounce" />
+            <span className="text-[10px] font-black uppercase tracking-[0.6em] text-slate-300">Synchronizing Global Intelligence</span>
+          </div>
         </div>
       </div>
     );
