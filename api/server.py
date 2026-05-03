@@ -31,10 +31,10 @@ target_symbols = ["USDJPY=X", "GC=F", "BTC-USD", "^N225", "XAGUSD=X", "AUDJPY=X"
 TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h"]
 
 # グローバルステート
-system_state = {sym: {tf: {"status": "Syncing", "score": 0, "ai_text": "Awaiting Core...", "predicted_price": 0, "probability": 0} for tf in TIMEFRAMES} for sym in target_symbols}
+system_state = {sym: {tf: {"status": "Syncing", "score": 0, "ai_text": "Awaiting Raw Intelligence...", "predicted_price": 0, "probability": 0} for tf in TIMEFRAMES} for sym in target_symbols}
 chart_data = {sym: {tf: [] for tf in TIMEFRAMES} for sym in target_symbols}
 price_cache = {sym: 0.0 for sym in target_symbols}
-market_overview = {"fear_greed": "50", "global_theme": "Initializing Global Synergy...", "last_update_ts": 0}
+market_overview = {"fear_greed": "50", "global_theme": "Analyzing Real-time Market Pulse...", "last_update_ts": 0}
 
 fetcher = HybridDataFetcher()
 engine = ONOPredictionEngine()
@@ -43,7 +43,7 @@ notifier = Notifier()
 db = SupabaseClient()
 
 async def analyze_symbol(symbol: str):
-    """単一銘柄の並列分析処理"""
+    """単一銘柄の並列データ取得処理"""
     try:
         df_base = fetcher.fetch_ohlcv(symbol, interval="1min")
         if df_base is None or df_base.empty: return None
@@ -91,82 +91,64 @@ async def analyze_symbol(symbol: str):
 async def estimation_loop():
     print("[Server] ONO High-Precision Autonomous Engine Started.")
     
-    # 起動直後に最初の分析を即座に実行
-    print("[Loop] Initial sync triggered...")
-    
     while True:
         cycle_start = time.time()
         try:
             print(f"[Loop] Cycle started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             
-            # 1. 並列データ取得
+            # 1. データ取得
             tasks = [analyze_symbol(sym) for sym in target_symbols]
             results = await asyncio.gather(*tasks)
             
-            batch_metrics = {}
-            valid_results_count = 0
+            # 2. 逐次AI分析 (レート制限回避のため、1銘柄ずつ2秒のディレイ)
             for res in results:
-                if res:
-                    valid_results_count += 1
-                    sym = res["symbol"]
-                    chart_data[sym] = res["charts"]
-                    batch_metrics[sym] = {
-                        "mtf": res["mtf"],
-                        "timeframe": "1m",
-                        "score": res["mtf"].get("1m", {}).get("score", 0),
-                        "result_obj": res["result_obj"]
-                    }
+                if not res: continue
+                
+                sym = res["symbol"]
+                chart_data[sym] = res["charts"]
+                
+                # UIの状態更新 (データ取得直後)
+                for tf in TIMEFRAMES:
+                    system_state[sym][tf].update({
+                        "status": res["mtf"].get(tf, {}).get("status", "Wait"),
+                        "score": res["mtf"].get(tf, {}).get("score", 0)
+                    })
+
+                # Gemini 生分析の実行 (1銘柄ずつ丁寧に)
+                print(f"[Gemini] Analyzing {sym}...")
+                ai_data = ai_analyzer.analyze_single(sym, res)
+                
+                if ai_data and "ai_text" in ai_data:
+                    # 分析成功時のみ状態を上書きし、DB保存
                     for tf in TIMEFRAMES:
                         system_state[sym][tf].update({
-                            "status": res["mtf"].get(tf, {}).get("status", "Wait"),
-                            "score": res["mtf"].get(tf, {}).get("score", 0)
+                            "ai_text": ai_data["ai_text"],
+                            "predicted_price": ai_data.get("predicted_price", 0),
+                            "probability": ai_data.get("probability", 0),
+                            "last_updated": datetime.now().isoformat()
                         })
+                    
+                    # 履歴保存
+                    try:
+                        db.save_prediction({
+                            "symbol": sym,
+                            "status": system_state[sym]["1m"]["status"],
+                            "score": system_state[sym]["1m"]["score"],
+                            "ai_text": ai_data["ai_text"],
+                            "predicted_price": ai_data.get("predicted_price", 0),
+                            "probability": ai_data.get("probability", 0)
+                        })
+                    except Exception as db_e:
+                        print(f"[Loop] DB Save Error for {sym}: {db_e}")
+                    
+                    # 通知
+                    if system_state[sym]["1m"]["score"] >= 80:
+                        notifier.notify_if_needed(sym, res["result_obj"], ai_data, price_cache[sym])
+                else:
+                    print(f"[Loop] AI Analysis failed for {sym}. Skipping persistence.")
 
-            print(f"[Loop] Data fetched for {valid_results_count}/{len(target_symbols)} symbols.")
-
-            # 2. MTF AI分析 (データがある場合のみ実行)
-            if batch_metrics:
-                try:
-                    ai_results = ai_analyzer.batch_analyze(batch_metrics)
-                    if isinstance(ai_results, dict):
-                        market_overview["global_theme"] = ai_results.get("market_intelligence", market_overview["global_theme"])
-                        market_overview["last_update_ts"] = int(time.time())
-                        
-                        for sym in target_symbols:
-                            # キーの正規化 (AIが返すキーに合わせる)
-                            matching_key = next((k for k in ai_results.keys() if k in sym or sym in k), None)
-                            
-                            if matching_key:
-                                ai_data = ai_results[matching_key]
-                                fallback_text = f"【テクニカル分析】スコア: {system_state[sym]['1m']['score']}% / RSI: {batch_metrics[sym]['mtf'].get('1m', {}).get('rsi')}"
-                                for tf in TIMEFRAMES:
-                                    system_state[sym][tf].update({
-                                        "ai_text": ai_data.get("ai_text") or fallback_text,
-                                        "predicted_price": ai_data.get("predicted_price", 0),
-                                        "probability": ai_data.get("probability", 0),
-                                        "last_updated": datetime.now().isoformat()
-                                    })
-                                
-                                # 通知としきい値保存 (50%以上で保存、80%以上で通知)
-                                if system_state[sym]["1m"]["score"] >= 80:
-                                    print(f"[Loop] Signal Alert: {sym} Score {system_state[sym]['1m']['score']}")
-                                    notifier.notify_if_needed(sym, batch_metrics[sym]["result_obj"], ai_data, price_cache[sym])
-                                
-                                if system_state[sym]["1m"]["score"] >= 50:
-                                    try:
-                                        db.save_prediction({
-                                            "symbol": sym,
-                                            "status": system_state[sym]["1m"]["status"],
-                                            "score": system_state[sym]["1m"]["score"],
-                                            "ai_text": ai_data.get("ai_text", ""),
-                                            "predicted_price": ai_data.get("predicted_price", 0),
-                                            "probability": ai_data.get("probability", 0)
-                                        })
-                                    except Exception as db_e:
-                                        print(f"[Loop] Supabase Save Failed: {db_e}")
-                except Exception as ai_e:
-                    print(f"[Loop] AI Step Error: {ai_e}")
-                    traceback.print_exc()
+                # レート制限を回避するためのウェイト
+                await asyncio.sleep(2.5)
 
             # Render生存戦略
             if os.environ.get("RENDER_EXTERNAL_URL"):
@@ -175,7 +157,7 @@ async def estimation_loop():
                 except: pass
 
             elapsed = time.time() - cycle_start
-            sleep_time = max(10, 60 - elapsed)
+            sleep_time = max(5, 60 - elapsed)
             print(f"[Loop] Cycle complete in {elapsed:.1f}s. Next scan in {sleep_time:.1f}s")
             await asyncio.sleep(sleep_time)
             
@@ -186,7 +168,6 @@ async def estimation_loop():
 
 @app.on_event("startup")
 async def startup_event():
-    # 起動時にバックグラウンドタスクとして開始
     asyncio.create_task(estimation_loop())
 
 @app.get("/api/predict")
@@ -203,17 +184,7 @@ def get_prediction(tf: str = Query("1m", regex="^(1m|5m|15m|1h|4h)$")):
 
 @app.get("/api/chart/{symbol}")
 def get_chart(symbol: str, tf: str = Query("1m", regex="^(1m|5m|15m|1h|4h)$")):
-    # UIのシンボル名からバックエンドのTickerへ変換
-    mapping = {
-        "USDJPY": "USDJPY=X",
-        "GOLD": "GC=F",
-        "BTC": "BTC-USD",
-        "JP225": "^N225",
-        "XAGUSD": "XAGUSD=X",
-        "AUDJPY": "AUDJPY=X",
-        "EURUSD": "EURUSD=X",
-        "EURJPY": "EURJPY=X"
-    }
+    mapping = {"USDJPY": "USDJPY=X", "GOLD": "GC=F", "BTC": "BTC-USD", "JP225": "^N225", "XAGUSD": "XAGUSD=X", "AUDJPY": "AUDJPY=X", "EURUSD": "EURUSD=X", "EURJPY": "EURJPY=X"}
     ticker = mapping.get(symbol, symbol)
     return {"data": chart_data.get(ticker, {}).get(tf, [])}
 
@@ -227,8 +198,4 @@ def read_root():
 
 @app.get("/api/health")
 def health_check():
-    return {
-        "status": "healthy", 
-        "mode": "Parallel_MTF_Active",
-        "last_sync": market_overview["last_update_ts"]
-    }
+    return {"status": "healthy", "mode": "Serial_AI_Deep_Active", "last_sync": int(time.time())}
