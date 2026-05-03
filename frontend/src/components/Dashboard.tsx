@@ -1,699 +1,939 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import useSWR from "swr";
-import {
-  Activity, AlertTriangle, TrendingUp, TrendingDown, DollarSign, BrainCircuit,
-  LayoutDashboard, Globe, Link2, History, ChevronRight, Zap, ShieldAlert,
-  CandlestickChart, BarChart2, Clock, Target, Percent, Timer, Loader2, Wifi,
-  Trophy, BookOpen, Layers
-} from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Separator } from "@/components/ui/separator";
 import dynamic from "next/dynamic";
+import {
+  TrendingUp, TrendingDown, Minus, Zap, Shield, Brain, BarChart3, Activity,
+  Target, AlertTriangle, Clock, Globe, RefreshCw, ChevronRight, Wifi, WifiOff,
+  Bell, Trophy, BarChart2, Layers, Radio, Crosshair, Eye, Info
+} from "lucide-react";
 
 const TradingViewChart = dynamic(() => import("./TradingViewChart"), { ssr: false });
 
-// ─── 設定 ────────────────────────────────────────────────────
-const fetcher = async (url: string) => {
-  const MAX_RETRIES = 4;
-  const DELAYS = [1000, 2000, 4000, 8000];
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 20000);
-    try {
-      const res = await fetch(url, { signal: controller.signal, cache: "no-store" });
-      clearTimeout(timer);
-      if (res.ok) return res.json();
-      if (attempt < MAX_RETRIES - 1) { await new Promise(r => setTimeout(r, DELAYS[attempt])); continue; }
-      throw new Error(`API Error: ${res.status}`);
-    } catch (err) {
-      clearTimeout(timer);
-      if (attempt < MAX_RETRIES - 1) { await new Promise(r => setTimeout(r, DELAYS[attempt])); continue; }
-      throw err;
-    }
-  }
-};
-
+// ─── API ──────────────────────────────────────────────────────
 const API_URL = (process.env.NEXT_PUBLIC_API_URL || "https://ono-estimator.onrender.com").replace(/\/$/, "");
-const SYMBOLS = ["USDJPY", "GOLD", "BTC", "JP225", "XAGUSD", "AUDJPY", "EURUSD", "EURJPY"];
-// 30m足を追加
-const TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "4h"];
 
-// ─── 色ユーティリティ ─────────────────────────────────────────
-const scoreColor = (s: number) =>
-  s >= 70 ? "text-emerald-500" : s >= 50 ? "text-sky-500" : s >= 30 ? "text-amber-500" : "text-rose-500";
-const statusBg = (st: string) => {
-  const u = (st || "").toUpperCase();
-  if (u.includes("BUY")) return "bg-emerald-50 text-emerald-600 border-emerald-100";
-  if (u.includes("SELL")) return "bg-rose-50 text-rose-600 border-rose-100";
-  return "bg-slate-50 text-slate-400 border-slate-100";
+const fetcher = async (url: string) => {
+  for (let i = 0; i < 4; i++) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 25000);
+    try {
+      const r = await fetch(url, { signal: ctrl.signal, cache: "no-store" });
+      clearTimeout(t);
+      if (r.ok) return r.json();
+      if (i < 3) { await new Promise(x => setTimeout(x, [1000,2000,4000][i])); continue; }
+    } catch { clearTimeout(t); if (i < 3) await new Promise(x => setTimeout(x, [1000,2000,4000][i])); }
+  }
+  throw new Error("API unreachable");
 };
 
-// ─── メインコンポーネント ──────────────────────────────────────
-export default function Dashboard() {
-  const [activeSymbol, setActiveSymbol] = useState("USDJPY");
-  const [activeTab, setActiveTab] = useState("dashboard");
-  const [activeTF, setActiveTF] = useState("1h");
-  const [margin, setMargin] = useState(1000000);
+// ─── 定数 ─────────────────────────────────────────────────────
+const SYMBOLS = ["USDJPY", "GOLD", "BTC", "JP225", "XAGUSD", "AUDJPY", "EURUSD", "EURJPY"];
+const SYMBOL_DISPLAY: Record<string, string> = {
+  USDJPY:"USD/JPY", GOLD:"GOLD", BTC:"BTC/USD", JP225:"日経225",
+  XAGUSD:"XAG/USD", AUDJPY:"AUD/JPY", EURUSD:"EUR/USD", EURJPY:"EUR/JPY"
+};
+const TIMEFRAMES = ["1m","5m","15m","30m","1h","4h"];
+const LAYER_LABELS = ["SMC", "テクニカル", "ファンダ", "モメンタム", "相関"];
+const LAYER_ICONS = ["🏗️","📊","📰","⚡","🔗"];
+const LAYER_COLORS = ["#22d3ee","#a78bfa","#34d399","#f59e0b","#fb7185"];
 
-  const swrConfig = {
-    revalidateOnFocus: true,
-    revalidateOnReconnect: true,
-    shouldRetryOnError: true,
-    errorRetryCount: 8,
-    errorRetryInterval: 5000,
-    dedupingInterval: 10000,
-    keepPreviousData: true,
-  };
+// ─── Session detection ────────────────────────────────────────
+function getCurrentSession(): { name: string; color: string; next: string } {
+  const h = new Date().getUTCHours();
+  if (h >= 21 || h < 6) return { name: "NY", color: "#60a5fa", next: "東京 06:00 JST" };
+  if (h >= 6 && h < 9) return { name: "東京早朝", color: "#a78bfa", next: "東京 09:00 JST" };
+  if (h >= 9 && h < 15) return { name: "東京", color: "#34d399", next: "ロンドン 16:00 JST" };
+  if (h >= 15 && h < 21) return { name: "ロンドン/NY", color: "#f59e0b", next: "NY 22:00 JST" };
+  return { name: "クローズ", color: "#6b7280", next: "-" };
+}
 
-  const { data, error, isLoading } = useSWR(
-    `${API_URL}/api/predict?tf=${activeTF}`,
-    fetcher,
-    { ...swrConfig, refreshInterval: 20000 }
-  );
-  const { data: chartRaw } = useSWR(
-    `${API_URL}/api/chart/${activeSymbol}?tf=${activeTF}`,
-    fetcher,
-    { ...swrConfig, refreshInterval: 60000 }
-  );
-  const { data: historyData } = useSWR(
-    `${API_URL}/api/history`,
-    fetcher,
-    { ...swrConfig, refreshInterval: 120000 }
-  );
+// ─── Utility ──────────────────────────────────────────────────
+const dirColor = (d: string) => {
+  const u = (d||"").toUpperCase();
+  if (u.includes("BUY")) return "#22d3ee";
+  if (u.includes("SELL")) return "#fb7185";
+  return "#6b7280";
+};
+const dirBg = (d: string) => {
+  const u = (d||"").toUpperCase();
+  if (u.includes("BUY")) return "rgba(34,211,238,0.12)";
+  if (u.includes("SELL")) return "rgba(251,113,133,0.12)";
+  return "rgba(107,114,128,0.12)";
+};
+const dirBorder = (d: string) => {
+  const u = (d||"").toUpperCase();
+  if (u.includes("BUY")) return "rgba(34,211,238,0.4)";
+  if (u.includes("SELL")) return "rgba(251,113,133,0.4)";
+  return "rgba(107,114,128,0.3)";
+};
+const dirGlow = (d: string) => {
+  const u = (d||"").toUpperCase();
+  if (u.includes("BUY")) return "0 0 40px rgba(34,211,238,0.3)";
+  if (u.includes("SELL")) return "0 0 40px rgba(251,113,133,0.3)";
+  return "none";
+};
+const scoreToColor = (s: number) =>
+  s >= 70 ? "#22d3ee" : s >= 50 ? "#a78bfa" : s >= 30 ? "#f59e0b" : "#fb7185";
 
-  const isConnected = !error && !isLoading && !!data;
-  const currentData = useMemo(() => data?.data?.[activeSymbol] || {
-    status: "Syncing", score: 0, ai_text: "AI同期中...", predicted_price: 0, probability: 0
-  }, [data, activeSymbol]);
-  const marketOverview = data?.overview || { global_theme: "市場データ取得中...", last_update_ts: 0 };
-  const chartData: any[] = chartRaw?.data || [];
-  const score = currentData?.score || 0;
-  const isIronClad = score >= 80;
-  const recommendedRiskPercent = score >= 80 ? 2 : score >= 60 ? 1 : 0.5;
-  const riskAmount = (margin * recommendedRiskPercent) / 100;
-
-  // ローディング画面
-  if (isLoading && !data) {
-    return (
-      <div className="min-h-screen bg-white flex flex-col items-center justify-center p-12">
-        <div className="flex flex-col items-center gap-6">
-          <div className="bg-sky-500 p-4 rounded-3xl shadow-2xl shadow-sky-200 animate-float">
-            <BrainCircuit className="w-10 h-10 text-white" />
-          </div>
-          <span className="text-[10px] font-black uppercase tracking-[0.6em] text-slate-300">
-            Synchronizing Global Intelligence
-          </span>
-        </div>
-      </div>
-    );
-  }
-
-  const renderContent = () => {
-    switch (activeTab) {
-      case "dashboard":
-        return (
-          <DashboardView
-            symbol={activeSymbol} data={currentData} chartData={chartData}
-            margin={margin} setMargin={setMargin}
-            riskAmount={riskAmount} recommendedRiskPercent={recommendedRiskPercent}
-            isIronClad={isIronClad} activeTF={activeTF} setActiveTF={setActiveTF}
-            allTFData={data?.data?.[activeSymbol + "_all"] || data?.data}
-          />
-        );
-      case "multi":
-        return (
-          <MultiAssetView
-            allData={data?.data}
-            setActiveSymbol={(s: string) => { setActiveSymbol(s); setActiveTab("dashboard"); }}
-            activeTF={activeTF}
-          />
-        );
-      case "correlation":
-        return <CorrelationView overview={marketOverview} />;
-      case "history":
-        return (
-          <HistoryView
-            history={historyData?.data || []}
-            performance={historyData?.performance || marketOverview?.performance || ""}
-            stats={historyData?.stats || marketOverview?.history_stats || {}}
-          />
-        );
-      default: return null;
-    }
-  };
-
+// ─── Clock ────────────────────────────────────────────────────
+function LiveClock() {
+  const [now, setNow] = useState(new Date());
+  useEffect(() => { const t = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(t); }, []);
+  const jst = new Date(now.getTime() + 9*3600*1000);
+  const hms = jst.toISOString().slice(11,19);
+  const date = jst.toISOString().slice(0,10).replace(/-/g,"/");
   return (
-    <div className="min-h-screen bg-white text-slate-900 flex flex-col selection:bg-sky-500/10 selection:text-sky-600">
-      <header className="sticky top-0 z-50 w-full glass border-b border-slate-100/50 p-4 md:p-6">
-        <div className="max-w-[1700px] mx-auto flex justify-between items-center gap-4">
-          {/* ロゴ */}
-          <div className="flex items-center gap-3 shrink-0">
-            <div className="bg-sky-500 p-2.5 rounded-2xl shadow-2xl shadow-sky-200 animate-float">
-              <BrainCircuit className="w-5 h-5 text-white" />
-            </div>
-            <div className="flex flex-col">
-              <span className="font-black text-xl tracking-tighter text-slate-900 leading-none">
-                ONO <span className="text-sky-500">Estimator</span>
-              </span>
-              <span className="text-[8px] font-black uppercase tracking-[0.3em] text-slate-300 mt-0.5">Ultra Pro v6.0</span>
-            </div>
-          </div>
-
-          {/* 銘柄セレクタ */}
-          <div className="flex-1 overflow-x-auto no-scrollbar">
-            <div className="flex items-center gap-1 bg-slate-50/50 p-1 rounded-[20px] border border-slate-100/50 w-max mx-auto">
-              {SYMBOLS.map(s => {
-                const d = data?.data?.[s];
-                const st = (d?.status || "").toUpperCase();
-                const dot = st.includes("BUY") ? "bg-emerald-400" : st.includes("SELL") ? "bg-rose-400" : "bg-slate-300";
-                return (
-                  <button
-                    key={s}
-                    onClick={() => setActiveSymbol(s)}
-                    className={`px-4 py-2 rounded-[16px] text-[9px] font-bold transition-all whitespace-nowrap tracking-widest uppercase flex items-center gap-1.5 ${
-                      activeSymbol === s ? "bg-white text-sky-600 shadow-sm" : "text-slate-400 hover:text-slate-600"
-                    }`}
-                  >
-                    <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
-                    {s}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* 接続状態 */}
-          <div className="flex items-center gap-3 shrink-0">
-            <div className="text-right">
-              <span className={`text-xs font-black ${isConnected ? "text-sky-500" : "text-red-500"}`}>
-                {isConnected ? "System Live" : "Connecting"}
-              </span>
-              <div className="flex items-center gap-2 mt-0.5 justify-end">
-                <span className="text-[8px] font-bold text-slate-300 uppercase tracking-widest">
-                  {marketOverview.last_update_ts
-                    ? `${Math.floor(Date.now() / 1000 - marketOverview.last_update_ts)}s ago`
-                    : "Syncing..."}
-                </span>
-                <div className={`w-2 h-2 rounded-full ${isConnected ? "bg-sky-500 shadow-[0_0_8px_#0ea5e9]" : "bg-red-500"}`} />
-              </div>
-            </div>
-          </div>
-        </div>
-      </header>
-
-      <main className="flex-1 p-4 md:p-8 pb-32">
-        <div className="max-w-[1700px] mx-auto">{renderContent()}</div>
-      </main>
-
-      <nav className="fixed bottom-6 left-1/2 -translate-x-1/2 w-[92%] max-w-md glass shadow-premium rounded-[36px] p-2 z-50 border border-slate-200/50">
-        <div className="grid grid-cols-4 gap-1">
-          <NavButton active={activeTab === "dashboard"} onClick={() => setActiveTab("dashboard")} icon={<LayoutDashboard size={16} />} label="Focus" />
-          <NavButton active={activeTab === "multi"} onClick={() => setActiveTab("multi")} icon={<Globe size={16} />} label="Multi" />
-          <NavButton active={activeTab === "correlation"} onClick={() => setActiveTab("correlation")} icon={<Link2 size={16} />} label="Market" />
-          <NavButton active={activeTab === "history"} onClick={() => setActiveTab("history")} icon={<History size={16} />} label="Logs" />
-        </div>
-      </nav>
+    <div className="flex items-center gap-2">
+      <Clock size={14} style={{ color: "#6b7280" }} />
+      <span style={{ fontFamily: "monospace", color: "#e2e8f0", fontSize: 13 }}>{date} {hms} JST</span>
     </div>
   );
 }
 
-function NavButton({ active, onClick, icon, label }: any) {
+// ─── Signal Hero ──────────────────────────────────────────────
+function SignalHero({ direction, probability, score, entry, tp1, tp2, sl, rr, confidence, isLoading }:
+  { direction:string; probability:number; score:number; entry:number|null; tp1:number|null;
+    tp2:number|null; sl:number|null; rr:number|null; confidence:string; isLoading:boolean }) {
+  const d = direction || "WAIT";
+  const col = dirColor(d);
+  const isStrong = d.includes("STRONG");
+  const label = d.replace("STRONG_","");
+  const Icon = label === "BUY" ? TrendingUp : label === "SELL" ? TrendingDown : Minus;
+
   return (
-    <button onClick={onClick} className={`flex flex-col items-center justify-center gap-1.5 py-3 rounded-[28px] transition-all duration-300 ${active ? "text-sky-600 bg-white shadow-sm" : "text-slate-400 hover:text-sky-500"}`}>
-      {icon}
-      <span className="text-[8px] font-black uppercase tracking-[0.15em]">{label}</span>
+    <div style={{
+      background: dirBg(d),
+      border: `2px solid ${dirBorder(d)}`,
+      borderRadius: 20,
+      boxShadow: dirGlow(d),
+      padding: "28px 32px",
+      transition: "all 0.5s ease",
+      position: "relative",
+      overflow: "hidden",
+    }}>
+      {isStrong && (
+        <div style={{
+          position: "absolute", top: 12, right: 12,
+          background: "rgba(245,158,11,0.2)", border: "1px solid rgba(245,158,11,0.5)",
+          borderRadius: 8, padding: "2px 10px",
+          fontSize: 11, color: "#f59e0b", fontWeight: 700, letterSpacing: 1
+        }}>STRONG SIGNAL</div>
+      )}
+      <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 20 }}>
+        <div style={{
+          width: 64, height: 64, borderRadius: "50%",
+          background: `rgba(${col === "#22d3ee" ? "34,211,238" : col === "#fb7185" ? "251,113,133" : "107,114,128"},0.15)`,
+          border: `2px solid ${col}`,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          animation: isStrong ? "pulse 2s infinite" : "none",
+        }}>
+          {isLoading ? (
+            <RefreshCw size={28} style={{ color: col, animation: "spin 1s linear infinite" }} />
+          ) : (
+            <Icon size={30} style={{ color: col }} />
+          )}
+        </div>
+        <div>
+          <div style={{ fontSize: 44, fontWeight: 900, color: col, letterSpacing: 2, lineHeight: 1 }}>
+            {isLoading ? "---" : label}
+          </div>
+          <div style={{ fontSize: 13, color: "#94a3b8", marginTop: 4 }}>
+            確信度 <span style={{ color: confidence === "HIGH" ? "#22d3ee" : confidence === "MEDIUM" ? "#f59e0b" : "#6b7280", fontWeight: 700 }}>{confidence || "---"}</span>
+            　|　勝率 <span style={{ color: col, fontWeight: 700 }}>{probability || 0}%</span>
+          </div>
+        </div>
+        <div style={{ marginLeft: "auto", textAlign: "right" }}>
+          <div style={{ fontSize: 32, fontWeight: 800, color: col }}>{score > 0 ? "+" : ""}{score}</div>
+          <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>ENGINE SCORE</div>
+        </div>
+      </div>
+
+      {/* Probability bar */}
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, fontSize: 12, color: "#64748b" }}>
+          <span>勝率</span><span style={{ color: col, fontWeight: 700 }}>{probability}%</span>
+        </div>
+        <div style={{ height: 6, background: "rgba(255,255,255,0.06)", borderRadius: 3, overflow: "hidden" }}>
+          <div style={{
+            height: "100%", width: `${probability}%`, background: col,
+            borderRadius: 3, transition: "width 0.8s ease",
+            boxShadow: `0 0 8px ${col}`,
+          }} />
+        </div>
+      </div>
+
+      {/* Entry / TP / SL */}
+      {entry && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10 }}>
+          {[
+            { label: "Entry", value: entry, color: "#e2e8f0" },
+            { label: "TP1", value: tp1, color: "#22d3ee" },
+            { label: "TP2", value: tp2, color: "#34d399" },
+            { label: "SL", value: sl, color: "#fb7185" },
+          ].map(({ label, value, color }) => (
+            <div key={label} style={{
+              background: "rgba(255,255,255,0.04)", borderRadius: 10, padding: "10px 12px",
+              border: "1px solid rgba(255,255,255,0.06)"
+            }}>
+              <div style={{ fontSize: 10, color: "#64748b", marginBottom: 4 }}>{label}</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color, fontFamily: "monospace" }}>
+                {value ? value.toFixed(value > 1000 ? 2 : value > 10 ? 3 : 5) : "---"}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {rr && rr > 0 && (
+        <div style={{ marginTop: 10, fontSize: 12, color: "#64748b", textAlign: "right" }}>
+          RR <span style={{ color: rr >= 2 ? "#22d3ee" : "#f59e0b", fontWeight: 700 }}>{rr.toFixed(2)}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Layer Breakdown ──────────────────────────────────────────
+function LayerBreakdown({ layers }: { layers: Record<string, number> }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {LAYER_LABELS.map((label, i) => {
+        const key = ["smc","technical","fundamental","momentum","correlation"][i];
+        const val = layers?.[key] ?? 0;
+        const abs = Math.abs(val);
+        const pct = Math.min(100, (abs / 100) * 100);
+        const col = val > 0 ? "#22d3ee" : val < 0 ? "#fb7185" : "#6b7280";
+        return (
+          <div key={label}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5, fontSize: 12 }}>
+              <span style={{ color: "#94a3b8" }}>{LAYER_ICONS[i]} {label}</span>
+              <span style={{ color: col, fontWeight: 700, fontFamily: "monospace" }}>
+                {val > 0 ? "+" : ""}{val.toFixed(1)}
+              </span>
+            </div>
+            <div style={{ height: 4, background: "rgba(255,255,255,0.06)", borderRadius: 2, overflow: "hidden" }}>
+              <div style={{
+                height: "100%", width: `${pct}%`,
+                background: `linear-gradient(90deg, ${col}88, ${col})`,
+                borderRadius: 2, transition: "width 0.6s ease",
+              }} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Asset Card ───────────────────────────────────────────────
+function AssetCard({ symbol, d, onClick, active }: {
+  symbol: string; d: any; onClick: () => void; active: boolean
+}) {
+  const dir = d?.status || d?.direction || "WAIT";
+  const col = dirColor(dir);
+  const score = d?.score ?? 0;
+  const prob = d?.probability ?? 0;
+  return (
+    <button onClick={onClick} style={{
+      background: active ? dirBg(dir) : "rgba(255,255,255,0.03)",
+      border: `1px solid ${active ? dirBorder(dir) : "rgba(255,255,255,0.06)"}`,
+      borderRadius: 12,
+      padding: "12px 14px",
+      textAlign: "left",
+      cursor: "pointer",
+      transition: "all 0.3s ease",
+      boxShadow: active ? dirGlow(dir) : "none",
+      width: "100%",
+    }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#e2e8f0", marginBottom: 4 }}>
+            {SYMBOL_DISPLAY[symbol] || symbol}
+          </div>
+          <div style={{ fontSize: 11, color: col, fontWeight: 700 }}>
+            {dir.replace("STRONG_","")}
+          </div>
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <div style={{ fontSize: 18, fontWeight: 800, color: col }}>
+            {score > 0 ? "+" : ""}{score}
+          </div>
+          <div style={{ fontSize: 10, color: "#64748b" }}>{prob}%</div>
+        </div>
+      </div>
     </button>
   );
 }
 
-// ─── Dashboard View ────────────────────────────────────────────
-function DashboardView({
-  symbol, data, chartData, margin, setMargin, riskAmount,
-  recommendedRiskPercent, isIronClad, activeTF, setActiveTF, allTFData
-}: any) {
-  const aiLines = (data?.ai_text || "").split("\n").filter(Boolean);
-  const score = data?.score || 0;
-  const status = data?.status || "Wait";
-  const layers = data?.layers || {};
-  const aligned = data?.aligned || 0;
-  const signals = data?.signals || [];
-  const warnings = data?.warnings || [];
+// ─── Notification Preview ─────────────────────────────────────
+function NotificationPreview({ symbol, d }: { symbol: string; d: any }) {
+  if (!d || !d.status) return null;
+  const dir = d.status || "WAIT";
+  const isActive = dir !== "WAIT" && (d.probability || 0) >= 70;
+  if (!isActive) return (
+    <div style={{
+      background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)",
+      borderRadius: 12, padding: "16px", textAlign: "center",
+    }}>
+      <Bell size={24} style={{ color: "#374151", margin: "0 auto 8px" }} />
+      <div style={{ fontSize: 13, color: "#4b5563" }}>待機中 — 高確率シグナル待ち</div>
+    </div>
+  );
+  const col = dirColor(dir);
+  const emoji = dir.includes("BUY") ? "🚀" : dir.includes("SELL") ? "🔻" : "⏸️";
+  return (
+    <div style={{
+      background: "rgba(15,23,42,0.8)", border: `1px solid ${col}44`,
+      borderRadius: 12, padding: "16px", fontFamily: "monospace",
+      boxShadow: `inset 0 0 20px ${col}08`,
+    }}>
+      <div style={{ fontSize: 11, color: "#64748b", marginBottom: 8 }}>📡 Discord通知プレビュー</div>
+      <div style={{ fontSize: 13, color: "#e2e8f0", lineHeight: 1.8 }}>
+        <span style={{ color: col, fontSize: 16, fontWeight: 900 }}>{emoji} {dir.replace("STRONG_","")} シグナル — {SYMBOL_DISPLAY[symbol]}</span>
+        <br />
+        <span style={{ color: "#94a3b8" }}>
+          勝率: <span style={{ color: col }}>{d.probability}%</span>　
+          Entry: <span style={{ color: "#e2e8f0" }}>{d.predicted_price?.toFixed?.(4) || "---"}</span>
+        </span>
+        <br />
+        <span style={{ color: "#64748b", fontSize: 11 }}>
+          {new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" })}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main ──────────────────────────────────────────────────────
+export default function Dashboard() {
+  const [activeSymbol, setActiveSymbol] = useState("USDJPY");
+  const [activeTF, setActiveTF] = useState("1h");
+  const [activeTab, setActiveTab] = useState<"main"|"multi"|"history"|"ai">("main");
+  const [margin, setMargin] = useState("1000000");
+  const [session, setSession] = useState(getCurrentSession());
+  const [showInfo, setShowInfo] = useState(false);
+
+  useEffect(() => {
+    const t = setInterval(() => setSession(getCurrentSession()), 60000);
+    return () => clearInterval(t);
+  }, []);
+
+  const swrOpts = {
+    revalidateOnFocus: true, shouldRetryOnError: true, errorRetryCount: 6,
+    errorRetryInterval: 5000, dedupingInterval: 10000, keepPreviousData: true,
+  };
+
+  const { data, error, isLoading, mutate } = useSWR(
+    `${API_URL}/api/predict?tf=${activeTF}`, fetcher,
+    { ...swrOpts, refreshInterval: 20000 }
+  );
+  const { data: chartRaw } = useSWR(
+    `${API_URL}/api/chart/${activeSymbol}?tf=${activeTF}`, fetcher,
+    { ...swrOpts, refreshInterval: 60000 }
+  );
+  const { data: overviewRaw } = useSWR(
+    `${API_URL}/api/overview`, fetcher,
+    { ...swrOpts, refreshInterval: 30000 }
+  );
+  const { data: historyRaw } = useSWR(
+    `${API_URL}/api/backtest/results`, fetcher,
+    { ...swrOpts, refreshInterval: 300000 }
+  );
+
+  const isConnected = !error && !isLoading;
+  const current = useMemo(() => data?.data?.[activeSymbol] || {}, [data, activeSymbol]);
+  const chartData: any[] = chartRaw?.data || [];
+  const overview = overviewRaw?.data || {};
+  const allData = data?.data || {};
+
+  const dir = current?.status || current?.direction || "WAIT";
+  const score = Number(current?.score || 0);
+  const prob = Number(current?.probability || 0);
+  const layers = current?.layers || {};
+  const signals = current?.signals || [];
+  const warnings = current?.warnings || [];
+  const aiText = current?.ai_text || "AI分析待機中...";
+  const aligned = current?.aligned ?? 0;
+  const confidence = current?.confidence || "LOW";
+
+  // Money calc
+  const m = parseInt(margin.replace(/,/g,"")) || 1000000;
+  const riskPct = score >= 80 ? 2 : score >= 60 ? 1 : 0.5;
+  const riskAmt = Math.floor(m * riskPct / 100);
+  const recLot = (riskAmt / 5000).toFixed(2);
+
+  // Win rate
+  const wr = historyRaw?.win_rate ?? historyRaw?.overall_win_rate ?? null;
+  const totalTrades = historyRaw?.total_trades ?? historyRaw?.total ?? null;
 
   return (
-    // ★ 縦横比修正: lg:grid-cols-3 (1+2分割) → 左パネル固定幅・右パネル拡張
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 animate-in fade-in slide-in-from-bottom-8 duration-700">
+    <div style={{
+      minHeight: "100vh",
+      background: "linear-gradient(135deg, #020617 0%, #0f172a 50%, #020617 100%)",
+      color: "#e2e8f0",
+      fontFamily: "'Inter', -apple-system, sans-serif",
+    }}>
+      <style>{`
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.6} }
+        @keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+        @keyframes slideIn { from{opacity:0;transform:translateY(-10px)} to{opacity:1;transform:translateY(0)} }
+        @keyframes glow { 0%,100%{box-shadow:0 0 20px rgba(34,211,238,0.2)} 50%{box-shadow:0 0 40px rgba(34,211,238,0.4)} }
+        * { box-sizing: border-box; }
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: rgba(255,255,255,0.03); }
+        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+      `}</style>
 
-      {/* ─── 左パネル (3/12) ─────────────────────────── */}
-      <div className="lg:col-span-3 space-y-6">
-
-        {/* スコアカード */}
-        <Card className={`overflow-hidden border-none bg-white shadow-premium rounded-[40px] ${isIronClad ? "ring-2 ring-sky-500/30" : ""}`}>
-          <CardContent className="p-8">
-            <div className="flex justify-between items-start mb-4">
-              <h3 className="font-black text-2xl tracking-tighter text-slate-900">{symbol}</h3>
-              <span className="text-2xl">{data?.emoji || "⚪"}</span>
+      {/* ─── Header ── */}
+      <header style={{
+        background: "rgba(2,6,23,0.8)", backdropFilter: "blur(20px)",
+        borderBottom: "1px solid rgba(255,255,255,0.06)",
+        padding: "0 24px", height: 60,
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        position: "sticky", top: 0, zIndex: 100,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{
+              width: 32, height: 32, borderRadius: 8,
+              background: "linear-gradient(135deg, #22d3ee, #a78bfa)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              boxShadow: "0 0 16px rgba(34,211,238,0.3)",
+            }}>
+              <Crosshair size={18} color="#000" />
             </div>
-            <div className="flex items-baseline gap-1 mb-2">
-              <span className={`text-8xl font-black tracking-tighter tabular-nums leading-none ${scoreColor(score)}`}>
-                {score}
-              </span>
-              <span className="text-2xl font-black text-slate-200">pt</span>
-            </div>
-            <Badge className={`border w-full py-3 rounded-2xl font-black text-[9px] tracking-widest uppercase mb-4 ${statusBg(status)}`}>
-              {status}
-            </Badge>
-            {/* 確率 */}
-            <div className="flex justify-between text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">
-              <span>Probability</span>
-              <span className="text-sky-500">{data?.probability || 0}%</span>
-            </div>
-            <div className="w-full bg-slate-100 rounded-full h-1.5">
-              <div className="bg-sky-500 h-1.5 rounded-full transition-all" style={{ width: `${data?.probability || 0}%` }} />
-            </div>
-            {data?.confidence && (
-              <p className="text-[9px] font-black text-slate-300 uppercase tracking-widest mt-2 text-center">
-                {data.confidence} · {aligned}/5 layers
-              </p>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* TP/SL カード（v6エンジン） */}
-        {(data?.tp1 || data?.tp2 || data?.sl) ? (
-          <Card className="border-none bg-white shadow-premium rounded-[40px] overflow-hidden">
-            <CardContent className="p-8 space-y-3">
-              <p className="text-[9px] font-black uppercase tracking-[0.5em] text-slate-300">Entry Strategy</p>
-              <div className="space-y-2 text-sm font-mono">
-                {[
-                  { label: "TP3", val: data?.tp3, color: "text-emerald-400" },
-                  { label: "TP2", val: data?.tp2, color: "text-emerald-500" },
-                  { label: "TP1", val: data?.tp1, color: "text-emerald-600" },
-                  { label: "ENTRY", val: data?.predicted_price, color: "text-sky-500 font-black" },
-                  { label: "SL", val: data?.sl, color: "text-rose-500" },
-                ].map(({ label, val, color }) => val ? (
-                  <div key={label} className="flex justify-between items-center">
-                    <span className="text-[9px] font-black text-slate-300 uppercase tracking-widest">{label}</span>
-                    <span className={`${color} text-xs`}>{typeof val === "number" ? val.toFixed(val > 1000 ? 0 : 5) : val}</span>
-                  </div>
-                ) : null)}
-                {data?.rr > 0 && (
-                  <div className="flex justify-between items-center border-t border-slate-50 pt-2 mt-2">
-                    <span className="text-[9px] font-black text-slate-300 uppercase tracking-widest">RR Ratio</span>
-                    <span className="text-amber-500 font-black text-xs">1:{data.rr}</span>
-                  </div>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-        ) : null}
-
-        {/* レイヤー内訳（v6エンジン） */}
-        {Object.keys(layers).length > 0 && (
-          <Card className="border-none bg-white shadow-premium rounded-[40px] overflow-hidden">
-            <CardContent className="p-8 space-y-3">
-              <p className="text-[9px] font-black uppercase tracking-[0.5em] text-slate-300 flex items-center gap-2">
-                <Layers className="w-3 h-3" />5 Layer Analysis
-              </p>
-              {Object.entries(layers).map(([name, val]: any) => {
-                const pct = Math.min(100, Math.max(0, ((val + 100) / 200) * 100));
-                const col = val > 15 ? "bg-emerald-400" : val < -15 ? "bg-rose-400" : "bg-slate-300";
-                return (
-                  <div key={name}>
-                    <div className="flex justify-between text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">
-                      <span>{name}</span>
-                      <span className={val > 0 ? "text-emerald-500" : val < 0 ? "text-rose-500" : "text-slate-400"}>
-                        {val > 0 ? "+" : ""}{val}
-                      </span>
-                    </div>
-                    <div className="w-full bg-slate-100 rounded-full h-1">
-                      <div className={`${col} h-1 rounded-full`} style={{ width: `${pct}%` }} />
-                    </div>
-                  </div>
-                );
-              })}
-            </CardContent>
-          </Card>
-        )}
-
-        {/* リスク計算 */}
-        <Card className="border-none bg-white shadow-premium rounded-[40px] overflow-hidden">
-          <CardContent className="p-8 space-y-4">
-            <p className="text-[9px] font-black uppercase tracking-[0.5em] text-slate-300">Risk Calculator</p>
             <div>
-              <Label className="text-[9px] font-black text-slate-300 uppercase tracking-widest">証拠金</Label>
-              <Input
-                type="number"
-                value={margin}
-                onChange={e => setMargin(Number(e.target.value))}
-                className="mt-1.5 border-slate-100 rounded-2xl font-black text-sm focus:ring-sky-500"
-              />
-            </div>
-            <div className="bg-slate-50 rounded-2xl p-4 space-y-1.5">
-              <div className="flex justify-between text-[9px] font-black uppercase tracking-widest">
-                <span className="text-slate-400">推奨リスク</span>
-                <span className="text-sky-500">{recommendedRiskPercent}%</span>
+              <div style={{ fontSize: 16, fontWeight: 800, letterSpacing: 0.5, color: "#f1f5f9" }}>
+                ONO ESTIMATOR
               </div>
-              <div className="flex justify-between text-[9px] font-black uppercase tracking-widest">
-                <span className="text-slate-400">リスク額</span>
-                <span className="text-slate-900">¥{riskAmount.toLocaleString()}</span>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* ─── 右パネル (9/12) ─────────────────────────── */}
-      <div className="lg:col-span-9 space-y-6">
-
-        {/* チャート */}
-        <Card className="border-none bg-white shadow-premium rounded-[40px] overflow-hidden">
-          <div className="flex items-center justify-between p-6 pb-4">
-            <div className="flex items-center gap-3">
-              <div className="bg-slate-100 p-2 rounded-xl">
-                <Timer className="w-4 h-4 text-slate-400" />
-              </div>
-              <div>
-                <span className="text-[9px] font-black uppercase tracking-widest text-slate-300">Interval</span>
-                <p className="text-sm font-black text-slate-900">{activeTF.toUpperCase()} View</p>
-              </div>
-            </div>
-            {/* タイムフレームセレクタ (30m追加) */}
-            <div className="flex items-center gap-1 bg-slate-50 p-1 rounded-[20px] border border-slate-100/50">
-              {TIMEFRAMES.map(tf => (
-                <button
-                  key={tf}
-                  onClick={() => setActiveTF(tf)}
-                  className={`px-4 py-2 rounded-[16px] text-[9px] font-black transition-all ${
-                    activeTF === tf ? "bg-white text-sky-600 shadow-sm" : "text-slate-400 hover:text-slate-600"
-                  }`}
-                >
-                  {tf.toUpperCase()}
-                </button>
-              ))}
+              <div style={{ fontSize: 10, color: "#64748b", letterSpacing: 1 }}>SIGNAL COMMAND CENTER</div>
             </div>
           </div>
 
-          {/* ★ 縦横比修正: 高さを画面比率に合わせて調整 */}
-          <div className="mx-6 mb-6 h-[420px] bg-slate-50/30 rounded-[28px] border border-slate-100/50 overflow-hidden">
-            <TradingViewChart data={chartData} symbol={symbol} />
+          {/* Session badge */}
+          <div style={{
+            background: `${session.color}20`, border: `1px solid ${session.color}44`,
+            borderRadius: 20, padding: "3px 12px", fontSize: 12, color: session.color,
+            fontWeight: 700,
+          }}>
+            <Radio size={10} style={{ display: "inline", marginRight: 5 }} />
+            {session.name}セッション
           </div>
-
-          {/* RSI + MACD インジケーター */}
-          <div className="grid grid-cols-2 gap-4 mx-6 mb-6">
-            <div className="bg-white rounded-[28px] p-5 border border-slate-100/50 shadow-sm">
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-[9px] font-black uppercase tracking-widest text-slate-400">Momentum (RSI)</span>
-                <span className={`text-xl font-black tabular-nums ${
-                  (chartData.at(-1)?.rsi || 50) > 70 ? "text-rose-500" :
-                  (chartData.at(-1)?.rsi || 50) < 30 ? "text-sky-500" : "text-slate-900"
-                }`}>
-                  {(chartData.at(-1)?.rsi || 0).toFixed(1)}
-                </span>
-              </div>
-              <div className="w-full bg-slate-100 rounded-full h-1.5">
-                <div
-                  className={`h-1.5 rounded-full transition-all ${
-                    (chartData.at(-1)?.rsi || 50) > 70 ? "bg-rose-400" :
-                    (chartData.at(-1)?.rsi || 50) < 30 ? "bg-sky-400" : "bg-slate-400"
-                  }`}
-                  style={{ width: `${chartData.at(-1)?.rsi || 0}%` }}
-                />
-              </div>
-              <div className="flex justify-between text-[8px] font-black text-slate-200 mt-1">
-                <span>OVERSOLD 30</span><span>OVERBOUGHT 70</span>
-              </div>
-            </div>
-            <div className="bg-white rounded-[28px] p-5 border border-slate-100/50 shadow-sm">
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-[9px] font-black uppercase tracking-widest text-slate-400">MACD Signal</span>
-                <span className={`text-xl font-black tabular-nums ${
-                  (chartData.at(-1)?.macd || 0) > 0 ? "text-emerald-500" : "text-rose-500"
-                }`}>
-                  {(chartData.at(-1)?.macd || 0).toFixed(4)}
-                </span>
-              </div>
-              <div className={`flex items-center gap-2 mt-2 ${
-                (chartData.at(-1)?.macd || 0) > 0 ? "text-emerald-500" : "text-rose-500"
-              }`}>
-                {(chartData.at(-1)?.macd || 0) > 0 ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />}
-                <span className="text-[9px] font-black uppercase tracking-widest">
-                  {(chartData.at(-1)?.macd || 0) > 0 ? "Bullish Momentum" : "Bearish Momentum"}
-                </span>
-              </div>
-            </div>
-          </div>
-        </Card>
-
-        {/* AI分析テキスト */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <Card className="border-none bg-white shadow-premium rounded-[40px] overflow-hidden">
-            <CardContent className="p-8">
-              <div className="flex items-center gap-3 mb-5">
-                <div className="bg-sky-50 p-2 rounded-xl"><BrainCircuit className="w-4 h-4 text-sky-500" /></div>
-                <p className="text-[9px] font-black uppercase tracking-[0.5em] text-slate-300">AI Analysis</p>
-              </div>
-              <ScrollArea className="h-48">
-                <div className="space-y-3 pr-2">
-                  {aiLines.length > 0 ? aiLines.map((line: string, i: number) => (
-                    <p key={i} className={`text-sm leading-relaxed ${
-                      line.includes("【") ? "text-amber-600 font-bold" : "text-slate-500"
-                    }`}>{line}</p>
-                  )) : (
-                    <p className="text-slate-300 text-sm">分析データを取得中...</p>
-                  )}
-                </div>
-              </ScrollArea>
-            </CardContent>
-          </Card>
-
-          {/* シグナル・警告 */}
-          <Card className="border-none bg-white shadow-premium rounded-[40px] overflow-hidden">
-            <CardContent className="p-8">
-              <div className="flex items-center gap-3 mb-5">
-                <div className="bg-amber-50 p-2 rounded-xl"><Zap className="w-4 h-4 text-amber-500" /></div>
-                <p className="text-[9px] font-black uppercase tracking-[0.5em] text-slate-300">Signals & Alerts</p>
-              </div>
-              <ScrollArea className="h-48">
-                <div className="space-y-2 pr-2">
-                  {warnings.map((w: string, i: number) => (
-                    <div key={i} className="flex items-start gap-2 bg-rose-50 rounded-xl p-3">
-                      <AlertTriangle className="w-3 h-3 text-rose-400 mt-0.5 shrink-0" />
-                      <p className="text-xs text-rose-600 font-medium">{w}</p>
-                    </div>
-                  ))}
-                  {signals.map((s: string, i: number) => (
-                    <div key={i} className="flex items-start gap-2 bg-slate-50 rounded-xl p-3">
-                      <ChevronRight className="w-3 h-3 text-sky-400 mt-0.5 shrink-0" />
-                      <p className="text-xs text-slate-600">{s}</p>
-                    </div>
-                  ))}
-                  {signals.length === 0 && warnings.length === 0 && (
-                    <p className="text-slate-300 text-xs">シグナル検出中...</p>
-                  )}
-                </div>
-              </ScrollArea>
-            </CardContent>
-          </Card>
         </div>
-      </div>
-    </div>
-  );
-}
 
-// ─── Multi Asset View ──────────────────────────────────────────
-function MultiAssetView({ allData, setActiveSymbol, activeTF }: any) {
-  return (
-    <div className="animate-in fade-in slide-in-from-bottom-8 duration-700">
-      <div className="mb-6 px-2">
-        <h2 className="text-4xl font-black tracking-tighter text-slate-900 uppercase">Multi Asset</h2>
-        <p className="text-slate-400 text-sm font-medium tracking-widest mt-1 uppercase">{activeTF.toUpperCase()} Overview</p>
-      </div>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {SYMBOLS.map(sym => {
-          const d = allData?.[sym];
-          const score = d?.score || 0;
-          const status = d?.status || "Wait";
-          const aligned = d?.aligned || 0;
-          return (
-            <Card
-              key={sym}
-              onClick={() => setActiveSymbol(sym)}
-              className="border-none bg-white shadow-premium rounded-[32px] overflow-hidden cursor-pointer hover:scale-[1.02] transition-transform"
-            >
-              <CardContent className="p-6">
-                <div className="flex justify-between items-start mb-3">
-                  <h3 className="font-black text-lg tracking-tighter text-slate-900">{sym}</h3>
-                  <span className="text-lg">{d?.emoji || "⚪"}</span>
-                </div>
-                <div className="flex items-baseline gap-1 mb-2">
-                  <span className={`text-5xl font-black tracking-tighter tabular-nums leading-none ${scoreColor(score)}`}>
-                    {score}
-                  </span>
-                  <span className="text-lg font-black text-slate-200">pt</span>
-                </div>
-                <Badge className={`border w-full py-2 rounded-2xl font-black text-[8px] tracking-widest uppercase mb-2 ${statusBg(status)}`}>
-                  {status}
-                </Badge>
-                {aligned > 0 && (
-                  <p className="text-[8px] font-black text-slate-300 uppercase tracking-widest text-center">
-                    {aligned}/5 layers · {d?.confidence || ""}
-                  </p>
-                )}
-              </CardContent>
-            </Card>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// ─── Correlation View ──────────────────────────────────────────
-function CorrelationView({ overview }: any) {
-  return (
-    <div className="space-y-10 animate-in zoom-in-95 duration-700 py-6 max-w-4xl mx-auto">
-      <div className="text-center space-y-4">
-        <div className="bg-sky-50 w-24 h-24 rounded-[40px] flex items-center justify-center mx-auto animate-float shadow-xl shadow-sky-100">
-          <Link2 className="text-sky-500 w-12 h-12" />
-        </div>
-        <h2 className="text-5xl font-black tracking-tighter text-slate-900 uppercase">Market Sentiment</h2>
-        <p className="text-slate-400 text-base font-medium tracking-tight">Cross-Asset Intelligence Matrix</p>
-      </div>
-      <Card className="border-none bg-white p-10 rounded-[48px] shadow-premium">
-        <h3 className="text-[10px] font-black uppercase tracking-[0.5em] text-slate-300 mb-8 flex items-center gap-3">
-          <Zap className="text-amber-500 w-4 h-4" />Global Theme
-        </h3>
-        <div className="bg-slate-50 rounded-[32px] p-8">
-          <p className="text-lg font-medium text-slate-700 leading-relaxed text-center">
-            {overview?.global_theme || "市場データ取得中..."}
-          </p>
-        </div>
-      </Card>
-    </div>
-  );
-}
-
-// ─── History View (過去データ分析) ────────────────────────────
-function HistoryView({ history, performance, stats }: { history: any[]; performance: string; stats: any }) {
-  // 全体勝率
-  const totalScored = history.filter(h => h.is_scored).length;
-  const totalCorrect = history.filter(h => h.is_correct).length;
-  const overallWinRate = totalScored > 0 ? Math.round(totalCorrect / totalScored * 100) : null;
-
-  return (
-    <div className="max-w-5xl mx-auto space-y-6 animate-in slide-in-from-bottom-8 duration-700">
-      <div className="px-2">
-        <h2 className="text-4xl font-black tracking-tighter text-slate-900 uppercase">Intelligence Logs</h2>
-        <p className="text-slate-400 text-sm font-medium tracking-widest mt-1 uppercase">AI Self-Learning Performance</p>
-      </div>
-
-      {/* 過去データ戦績サマリー */}
-      {(performance || overallWinRate !== null) && (
-        <Card className="border-none bg-white shadow-premium rounded-[36px] overflow-hidden">
-          <CardContent className="p-8">
-            <div className="flex items-center gap-3 mb-5">
-              <div className="bg-amber-50 p-2 rounded-xl"><Trophy className="w-4 h-4 text-amber-500" /></div>
-              <p className="text-[9px] font-black uppercase tracking-[0.5em] text-slate-300">Past Performance Analytics</p>
+        <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
+          <LiveClock />
+          {wr !== null && (
+            <div style={{ fontSize: 12, color: "#94a3b8" }}>
+              勝率 <span style={{ color: wr >= 60 ? "#22d3ee" : wr >= 50 ? "#f59e0b" : "#fb7185", fontWeight: 700, fontSize: 14 }}>{typeof wr === 'number' ? wr.toFixed(1) : wr}%</span>
+              {totalTrades && <span style={{ color: "#4b5563" }}> ({totalTrades}件)</span>}
             </div>
-            <div className="grid grid-cols-3 gap-4 mb-5">
-              <div className="bg-slate-50 rounded-2xl p-4 text-center">
-                <p className="text-3xl font-black text-sky-500">{totalScored}</p>
-                <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mt-1">採点済</p>
-              </div>
-              <div className="bg-slate-50 rounded-2xl p-4 text-center">
-                <p className="text-3xl font-black text-emerald-500">{totalCorrect}</p>
-                <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mt-1">的中</p>
-              </div>
-              <div className="bg-slate-50 rounded-2xl p-4 text-center">
-                <p className={`text-3xl font-black ${(overallWinRate || 0) >= 60 ? "text-emerald-500" : (overallWinRate || 0) >= 50 ? "text-amber-500" : "text-rose-500"}`}>
-                  {overallWinRate !== null ? `${overallWinRate}%` : "N/A"}
-                </p>
-                <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mt-1">勝率</p>
-              </div>
-            </div>
-            {performance && (
-              <p className="text-xs text-slate-500 bg-slate-50 rounded-xl p-3">{performance}</p>
+          )}
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            {isConnected ? (
+              <><Wifi size={14} style={{ color: "#22d3ee" }} /><span style={{ fontSize: 12, color: "#22d3ee" }}>LIVE</span></>
+            ) : isLoading ? (
+              <><RefreshCw size={14} style={{ color: "#f59e0b", animation: "spin 1s linear infinite" }} /><span style={{ fontSize: 12, color: "#f59e0b" }}>SYNC</span></>
+            ) : (
+              <><WifiOff size={14} style={{ color: "#fb7185" }} /><span style={{ fontSize: 12, color: "#fb7185" }}>OFFLINE</span></>
             )}
-          </CardContent>
-        </Card>
-      )}
-
-      {/* 銘柄別勝率 */}
-      {Object.keys(stats).length > 0 && (
-        <Card className="border-none bg-white shadow-premium rounded-[36px] overflow-hidden">
-          <CardContent className="p-8">
-            <div className="flex items-center gap-3 mb-5">
-              <div className="bg-sky-50 p-2 rounded-xl"><BarChart2 className="w-4 h-4 text-sky-500" /></div>
-              <p className="text-[9px] font-black uppercase tracking-[0.5em] text-slate-300">Symbol Performance</p>
-            </div>
-            <div className="space-y-3">
-              {Object.entries(stats).map(([sym, s]: any) => {
-                const wr = s.win_rate || 50;
-                const col = wr >= 60 ? "bg-emerald-400" : wr >= 50 ? "bg-sky-400" : "bg-rose-400";
-                return (
-                  <div key={sym}>
-                    <div className="flex justify-between text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">
-                      <span>{sym}</span>
-                      <span>{s.correct}/{s.total} · <span className={wr >= 60 ? "text-emerald-500" : wr >= 50 ? "text-sky-500" : "text-rose-500"}>{wr}%</span></span>
-                    </div>
-                    <div className="w-full bg-slate-100 rounded-full h-1.5">
-                      <div className={`${col} h-1.5 rounded-full transition-all`} style={{ width: `${wr}%` }} />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* 履歴ログ */}
-      <div className="space-y-3">
-        {history.length === 0 ? (
-          <div className="text-center py-20">
-            <BookOpen className="w-12 h-12 text-slate-200 mx-auto mb-4" />
-            <p className="text-slate-300 font-black uppercase tracking-widest text-sm">No logs yet</p>
           </div>
-        ) : history.map((h: any, i: number) => (
-          <Card key={i} className="border-none bg-white shadow-premium rounded-[28px] overflow-hidden">
-            <CardContent className="p-6">
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-2 flex-wrap">
-                    <span className="font-black text-slate-900">{h.symbol?.replace("=X","").replace("-USD","")}</span>
-                    <Badge className={`border text-[8px] font-black tracking-widest uppercase py-1 px-2 rounded-xl ${statusBg(h.status)}`}>
-                      {h.status}
-                    </Badge>
-                    {h.is_scored && (
-                      <Badge className={`border text-[8px] font-black tracking-widest uppercase py-1 px-2 rounded-xl ${
-                        h.is_correct ? "bg-emerald-50 text-emerald-600 border-emerald-100" : "bg-rose-50 text-rose-600 border-rose-100"
-                      }`}>
-                        {h.is_correct ? "✓ WIN" : "✗ LOSS"}
-                      </Badge>
-                    )}
-                  </div>
-                  <p className="text-xs text-slate-500 leading-relaxed line-clamp-2">
-                    {h.ai_text || "分析テキストなし"}
-                  </p>
-                </div>
-                <div className="text-right shrink-0">
-                  <p className="text-2xl font-black text-slate-900">{h.score || 0}pt</p>
-                  <p className="text-[8px] font-black text-slate-300 uppercase tracking-widest">{h.probability || 0}%</p>
-                  <p className="text-[8px] text-slate-200 mt-1">
-                    {h.created_at ? new Date(h.created_at).toLocaleString("ja-JP", { month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit" }) : ""}
-                  </p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+          <button onClick={() => mutate()} style={{
+            background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)",
+            borderRadius: 8, padding: "6px 14px", cursor: "pointer", color: "#94a3b8", fontSize: 12,
+            display: "flex", alignItems: "center", gap: 5, transition: "all 0.2s",
+          }}>
+            <RefreshCw size={12} />更新
+          </button>
+        </div>
+      </header>
+
+      {/* ─── Tabs ── */}
+      <div style={{
+        background: "rgba(2,6,23,0.6)", backdropFilter: "blur(10px)",
+        borderBottom: "1px solid rgba(255,255,255,0.06)",
+        padding: "0 24px", display: "flex", gap: 4,
+      }}>
+        {([
+          { id: "main",    label: "シグナル",  icon: <Crosshair size={14} /> },
+          { id: "multi",   label: "全銘柄",    icon: <Globe size={14} /> },
+          { id: "history", label: "パフォーマンス", icon: <Trophy size={14} /> },
+          { id: "ai",      label: "AI分析",    icon: <Brain size={14} /> },
+        ] as const).map(({ id, label, icon }) => (
+          <button key={id} onClick={() => setActiveTab(id)} style={{
+            background: activeTab === id ? "rgba(34,211,238,0.1)" : "transparent",
+            border: "none", borderBottom: activeTab === id ? "2px solid #22d3ee" : "2px solid transparent",
+            color: activeTab === id ? "#22d3ee" : "#64748b",
+            padding: "12px 16px", cursor: "pointer", fontSize: 13, fontWeight: 600,
+            display: "flex", alignItems: "center", gap: 7, transition: "all 0.2s",
+          }}>
+            {icon}{label}
+          </button>
         ))}
       </div>
+
+      {/* ─── Main Content ── */}
+      <div style={{ maxWidth: 1600, margin: "0 auto", padding: "20px 24px" }}>
+
+        {/* ══════════ TAB: MAIN ══════════ */}
+        {activeTab === "main" && (
+          <div style={{ display: "grid", gridTemplateColumns: "280px 1fr 300px", gap: 20 }}>
+
+            {/* LEFT: Symbol selector */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              {/* Symbol list */}
+              <div style={{
+                background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
+                borderRadius: 16, padding: 16,
+              }}>
+                <div style={{ fontSize: 11, color: "#64748b", letterSpacing: 1, marginBottom: 12, textTransform: "uppercase" }}>
+                  銘柄選択
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {SYMBOLS.map(sym => (
+                    <AssetCard key={sym} symbol={sym} d={allData[sym]} onClick={() => setActiveSymbol(sym)} active={activeSymbol === sym} />
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* CENTER */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              {/* TF selector */}
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span style={{ fontSize: 12, color: "#64748b" }}>時間足:</span>
+                {TIMEFRAMES.map(tf => (
+                  <button key={tf} onClick={() => setActiveTF(tf)} style={{
+                    background: activeTF === tf ? "rgba(34,211,238,0.15)" : "rgba(255,255,255,0.04)",
+                    border: `1px solid ${activeTF === tf ? "rgba(34,211,238,0.4)" : "rgba(255,255,255,0.06)"}`,
+                    borderRadius: 8, padding: "5px 14px",
+                    color: activeTF === tf ? "#22d3ee" : "#64748b",
+                    cursor: "pointer", fontSize: 12, fontWeight: 600, transition: "all 0.2s",
+                  }}>{tf}</button>
+                ))}
+                <div style={{ marginLeft: "auto", fontSize: 12, color: "#4b5563" }}>
+                  {SYMBOL_DISPLAY[activeSymbol]}
+                </div>
+              </div>
+
+              {/* Hero signal */}
+              <SignalHero
+                direction={dir} probability={prob} score={score}
+                entry={current?.entry || null} tp1={current?.tp1 || current?.tp || null}
+                tp2={current?.tp2 || null} sl={current?.sl || null} rr={current?.rr || null}
+                confidence={confidence} isLoading={isLoading}
+              />
+
+              {/* Chart */}
+              <div style={{
+                background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
+                borderRadius: 16, overflow: "hidden", height: 320,
+              }}>
+                {chartData.length > 0 ? (
+                  <TradingViewChart data={chartData} symbol={activeSymbol} />
+                ) : (
+                  <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <div style={{ textAlign: "center" }}>
+                      <BarChart3 size={40} style={{ color: "#1e293b", margin: "0 auto 12px" }} />
+                      <div style={{ color: "#374151", fontSize: 13 }}>チャートデータ取得中...</div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Signals & Warnings */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                <div style={{
+                  background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
+                  borderRadius: 14, padding: 16,
+                }}>
+                  <div style={{ fontSize: 11, color: "#64748b", letterSpacing: 1, marginBottom: 12 }}>📡 シグナル</div>
+                  {signals.length === 0 ? (
+                    <div style={{ color: "#374151", fontSize: 13 }}>シグナル待機中</div>
+                  ) : signals.map((s: string, i: number) => (
+                    <div key={i} style={{
+                      display: "flex", alignItems: "center", gap: 8, marginBottom: 8,
+                      fontSize: 12, color: "#94a3b8",
+                    }}>
+                      <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#22d3ee", flexShrink: 0 }} />
+                      {s}
+                    </div>
+                  ))}
+                </div>
+                <div style={{
+                  background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
+                  borderRadius: 14, padding: 16,
+                }}>
+                  <div style={{ fontSize: 11, color: "#64748b", letterSpacing: 1, marginBottom: 12 }}>⚠️ 警告</div>
+                  {warnings.length === 0 ? (
+                    <div style={{ color: "#374151", fontSize: 13 }}>警告なし</div>
+                  ) : warnings.map((w: string, i: number) => (
+                    <div key={i} style={{
+                      display: "flex", alignItems: "center", gap: 8, marginBottom: 8,
+                      fontSize: 12, color: "#fb7185",
+                    }}>
+                      <AlertTriangle size={12} style={{ flexShrink: 0 }} />
+                      {w}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* RIGHT */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              {/* Layer breakdown */}
+              <div style={{
+                background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
+                borderRadius: 16, padding: 18,
+              }}>
+                <div style={{ fontSize: 11, color: "#64748b", letterSpacing: 1, marginBottom: 14, textTransform: "uppercase" }}>
+                  5-Layer Engine
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+                  <div style={{
+                    fontSize: 28, fontWeight: 800,
+                    color: aligned >= 4 ? "#22d3ee" : aligned >= 3 ? "#f59e0b" : "#64748b",
+                  }}>{aligned}<span style={{ fontSize: 14, fontWeight: 400, color: "#4b5563" }}>/5</span></div>
+                  <div style={{ fontSize: 12, color: "#64748b" }}>
+                    レイヤー<br />整合
+                  </div>
+                </div>
+                <LayerBreakdown layers={layers} />
+              </div>
+
+              {/* Notification preview */}
+              <div style={{
+                background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
+                borderRadius: 16, padding: 16,
+              }}>
+                <div style={{ fontSize: 11, color: "#64748b", letterSpacing: 1, marginBottom: 12 }}>
+                  <Bell size={11} style={{ display: "inline", marginRight: 5 }} />DISCORD通知
+                </div>
+                <NotificationPreview symbol={activeSymbol} d={current} />
+              </div>
+
+              {/* Money manager */}
+              <div style={{
+                background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
+                borderRadius: 16, padding: 16,
+              }}>
+                <div style={{ fontSize: 11, color: "#64748b", letterSpacing: 1, marginBottom: 14 }}>💰 ロット計算</div>
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 11, color: "#64748b", marginBottom: 6 }}>証拠金 (円)</div>
+                  <input
+                    value={margin}
+                    onChange={e => setMargin(e.target.value)}
+                    style={{
+                      width: "100%", background: "rgba(255,255,255,0.06)",
+                      border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8,
+                      padding: "8px 12px", color: "#e2e8f0", fontSize: 14,
+                    }}
+                  />
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <div style={{
+                    background: "rgba(255,255,255,0.04)", borderRadius: 10, padding: "10px 12px",
+                  }}>
+                    <div style={{ fontSize: 10, color: "#64748b", marginBottom: 4 }}>リスク率</div>
+                    <div style={{ fontSize: 18, fontWeight: 800, color: "#22d3ee" }}>{riskPct}%</div>
+                  </div>
+                  <div style={{
+                    background: "rgba(255,255,255,0.04)", borderRadius: 10, padding: "10px 12px",
+                  }}>
+                    <div style={{ fontSize: 10, color: "#64748b", marginBottom: 4 }}>リスク額</div>
+                    <div style={{ fontSize: 18, fontWeight: 800, color: "#f59e0b" }}>¥{riskAmt.toLocaleString()}</div>
+                  </div>
+                </div>
+                <div style={{
+                  marginTop: 10, background: "rgba(34,211,238,0.1)",
+                  border: "1px solid rgba(34,211,238,0.2)",
+                  borderRadius: 10, padding: "10px 14px", textAlign: "center",
+                }}>
+                  <div style={{ fontSize: 11, color: "#64748b" }}>推奨ロット</div>
+                  <div style={{ fontSize: 26, fontWeight: 900, color: "#22d3ee" }}>{recLot}<span style={{ fontSize: 14 }}>lot</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ══════════ TAB: MULTI ══════════ */}
+        {activeTab === "multi" && (
+          <div>
+            <div style={{ fontSize: 20, fontWeight: 800, color: "#f1f5f9", marginBottom: 16 }}>
+              全銘柄 スキャン
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: 16 }}>
+              {SYMBOLS.map(sym => {
+                const d = allData[sym] || overview[sym] || {};
+                const dir = d.status || d.direction || "WAIT";
+                const col = dirColor(dir);
+                const sc = d.score ?? 0;
+                const pr = d.probability ?? 0;
+                const lyr = d.layers || {};
+                return (
+                  <div key={sym} onClick={() => { setActiveSymbol(sym); setActiveTab("main"); }}
+                    style={{
+                      background: dirBg(dir), border: `1px solid ${dirBorder(dir)}`,
+                      borderRadius: 16, padding: 20, cursor: "pointer",
+                      boxShadow: dirGlow(dir), transition: "all 0.3s ease",
+                    }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 14 }}>
+                      <div>
+                        <div style={{ fontSize: 16, fontWeight: 800, color: "#f1f5f9" }}>{SYMBOL_DISPLAY[sym]}</div>
+                        <div style={{ fontSize: 13, color: col, fontWeight: 700, marginTop: 2 }}>
+                          {dir.replace("STRONG_","")}
+                        </div>
+                      </div>
+                      <div style={{ textAlign: "right" }}>
+                        <div style={{ fontSize: 30, fontWeight: 900, color: col }}>{sc > 0 ? "+" : ""}{sc}</div>
+                        <div style={{ fontSize: 12, color: "#64748b" }}>{pr}%</div>
+                      </div>
+                    </div>
+                    <div style={{ marginBottom: 10 }}>
+                      <div style={{ height: 4, background: "rgba(255,255,255,0.06)", borderRadius: 2, overflow: "hidden" }}>
+                        <div style={{ height: "100%", width: `${pr}%`, background: col, borderRadius: 2 }} />
+                      </div>
+                    </div>
+                    <LayerBreakdown layers={lyr} />
+                    <div style={{ marginTop: 12, fontSize: 11, color: "#64748b", textAlign: "right" }}>
+                      クリックで詳細 →
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* ══════════ TAB: HISTORY ══════════ */}
+        {activeTab === "history" && (
+          <div>
+            <div style={{ fontSize: 20, fontWeight: 800, color: "#f1f5f9", marginBottom: 20 }}>
+              パフォーマンス分析
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 14, marginBottom: 24 }}>
+              {[
+                { label: "総合勝率", value: wr !== null ? `${typeof wr === 'number' ? wr.toFixed(1) : wr}%` : "--", color: "#22d3ee" },
+                { label: "総トレード数", value: totalTrades ?? "--", color: "#a78bfa" },
+                { label: "勝ちトレード", value: historyRaw?.wins ?? historyRaw?.win_count ?? "--", color: "#34d399" },
+                { label: "負けトレード", value: historyRaw?.losses ?? historyRaw?.loss_count ?? "--", color: "#fb7185" },
+                { label: "平均RR", value: historyRaw?.avg_rr ? `${historyRaw.avg_rr.toFixed(2)}` : "--", color: "#f59e0b" },
+                { label: "Profit Factor", value: historyRaw?.profit_factor ? `${historyRaw.profit_factor.toFixed(2)}` : "--", color: "#22d3ee" },
+              ].map(({ label, value, color }) => (
+                <div key={label} style={{
+                  background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)",
+                  borderRadius: 14, padding: "20px 18px",
+                }}>
+                  <div style={{ fontSize: 11, color: "#64748b", marginBottom: 8 }}>{label}</div>
+                  <div style={{ fontSize: 28, fontWeight: 900, color }}>{value}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Per-symbol breakdown */}
+            {historyRaw?.by_symbol && (
+              <div style={{
+                background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
+                borderRadius: 16, padding: 20,
+              }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "#94a3b8", marginBottom: 16 }}>銘柄別勝率</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  {Object.entries(historyRaw.by_symbol).map(([sym, stats]: [string, any]) => {
+                    const symWr = stats?.win_rate ?? 0;
+                    const symTrades = stats?.total ?? 0;
+                    const col = symWr >= 60 ? "#22d3ee" : symWr >= 50 ? "#f59e0b" : "#fb7185";
+                    return (
+                      <div key={sym} style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                        <div style={{ width: 90, fontSize: 13, color: "#94a3b8" }}>{SYMBOL_DISPLAY[sym] || sym}</div>
+                        <div style={{ flex: 1, height: 8, background: "rgba(255,255,255,0.06)", borderRadius: 4, overflow: "hidden" }}>
+                          <div style={{ height: "100%", width: `${symWr}%`, background: col, borderRadius: 4 }} />
+                        </div>
+                        <div style={{ width: 50, textAlign: "right", fontSize: 13, fontWeight: 700, color: col }}>{symWr.toFixed(0)}%</div>
+                        <div style={{ width: 40, fontSize: 11, color: "#4b5563" }}>({symTrades})</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Log table */}
+            {historyRaw?.logs && historyRaw.logs.length > 0 && (
+              <div style={{
+                marginTop: 20, background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
+                borderRadius: 16, padding: 20,
+              }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "#94a3b8", marginBottom: 14 }}>直近トレード</div>
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+                        {["時刻","銘柄","方向","Entry","Exit","結果","RR"].map(h => (
+                          <th key={h} style={{ padding: "8px 12px", color: "#64748b", textAlign: "left", fontWeight: 600 }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {historyRaw.logs.slice(0, 20).map((log: any, i: number) => {
+                        const isWin = log.result === "WIN" || log.outcome === "WIN";
+                        return (
+                          <tr key={i} style={{ borderBottom: "1px solid rgba(255,255,255,0.03)" }}>
+                            <td style={{ padding: "8px 12px", color: "#64748b" }}>{log.time || log.created_at?.slice(0,16) || "---"}</td>
+                            <td style={{ padding: "8px 12px", color: "#e2e8f0" }}>{log.symbol || "---"}</td>
+                            <td style={{ padding: "8px 12px" }}>
+                              <span style={{ color: dirColor(log.direction || log.signal || "WAIT"), fontWeight: 700 }}>
+                                {(log.direction || log.signal || "---").replace("STRONG_","")}
+                              </span>
+                            </td>
+                            <td style={{ padding: "8px 12px", color: "#94a3b8", fontFamily: "monospace" }}>{log.entry || "---"}</td>
+                            <td style={{ padding: "8px 12px", color: "#94a3b8", fontFamily: "monospace" }}>{log.exit || log.exit_price || "---"}</td>
+                            <td style={{ padding: "8px 12px" }}>
+                              <span style={{
+                                color: isWin ? "#22d3ee" : "#fb7185",
+                                background: isWin ? "rgba(34,211,238,0.1)" : "rgba(251,113,133,0.1)",
+                                padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 700,
+                              }}>{log.result || log.outcome || "---"}</span>
+                            </td>
+                            <td style={{ padding: "8px 12px", color: "#f59e0b", fontFamily: "monospace" }}>
+                              {log.rr ? log.rr.toFixed(2) : "---"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ══════════ TAB: AI ══════════ */}
+        {activeTab === "ai" && (
+          <div>
+            <div style={{ fontSize: 20, fontWeight: 800, color: "#f1f5f9", marginBottom: 20 }}>
+              AI分析ダッシュボード
+            </div>
+
+            {/* Symbol + TF selector */}
+            <div style={{ display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>
+              {SYMBOLS.map(sym => (
+                <button key={sym} onClick={() => setActiveSymbol(sym)} style={{
+                  background: activeSymbol === sym ? "rgba(34,211,238,0.15)" : "rgba(255,255,255,0.04)",
+                  border: `1px solid ${activeSymbol === sym ? "rgba(34,211,238,0.4)" : "rgba(255,255,255,0.06)"}`,
+                  borderRadius: 8, padding: "6px 14px",
+                  color: activeSymbol === sym ? "#22d3ee" : "#64748b",
+                  cursor: "pointer", fontSize: 12, fontWeight: 600, transition: "all 0.2s",
+                }}>{SYMBOL_DISPLAY[sym]}</button>
+              ))}
+              <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+                {TIMEFRAMES.map(tf => (
+                  <button key={tf} onClick={() => setActiveTF(tf)} style={{
+                    background: activeTF === tf ? "rgba(167,139,250,0.15)" : "rgba(255,255,255,0.04)",
+                    border: `1px solid ${activeTF === tf ? "rgba(167,139,250,0.4)" : "rgba(255,255,255,0.06)"}`,
+                    borderRadius: 6, padding: "5px 12px",
+                    color: activeTF === tf ? "#a78bfa" : "#64748b",
+                    cursor: "pointer", fontSize: 11, fontWeight: 600, transition: "all 0.2s",
+                  }}>{tf}</button>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 400px", gap: 20 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                {/* Signal summary at top */}
+                <SignalHero
+                  direction={dir} probability={prob} score={score}
+                  entry={current?.entry || null} tp1={current?.tp1 || current?.tp || null}
+                  tp2={current?.tp2 || null} sl={current?.sl || null} rr={current?.rr || null}
+                  confidence={confidence} isLoading={isLoading}
+                />
+
+                {/* AI text box */}
+                <div style={{
+                  background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
+                  borderRadius: 16, padding: 20,
+                }}>
+                  <div style={{ fontSize: 12, color: "#64748b", marginBottom: 14, display: "flex", alignItems: "center", gap: 8 }}>
+                    <Brain size={14} style={{ color: "#a78bfa" }} />
+                    <span>Gemini AI 分析レポート</span>
+                  </div>
+                  {isLoading ? (
+                    <div style={{ color: "#374151", fontSize: 13, textAlign: "center", padding: 24 }}>
+                      <Brain size={32} style={{ color: "#1e293b", margin: "0 auto 12px" }} />
+                      <div>AI分析中...</div>
+                    </div>
+                  ) : (
+                    <div style={{
+                      fontSize: 14, color: "#cbd5e1", lineHeight: 1.9,
+                      whiteSpace: "pre-wrap", fontFamily: "'Noto Sans JP', sans-serif",
+                    }}>
+                      {aiText || "AI分析待機中..."}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                <div style={{
+                  background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
+                  borderRadius: 16, padding: 18,
+                }}>
+                  <div style={{ fontSize: 11, color: "#64748b", letterSpacing: 1, marginBottom: 14 }}>5-LAYER ANALYSIS</div>
+                  <div style={{ marginBottom: 20 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                      <span style={{ fontSize: 12, color: "#94a3b8" }}>レイヤー整合</span>
+                      <span style={{ fontSize: 20, fontWeight: 800, color: aligned >= 4 ? "#22d3ee" : aligned >= 3 ? "#f59e0b" : "#64748b" }}>
+                        {aligned}/5
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      {Array.from({length: 5}).map((_, i) => (
+                        <div key={i} style={{
+                          flex: 1, height: 8, borderRadius: 4,
+                          background: i < aligned ? "#22d3ee" : "rgba(255,255,255,0.06)",
+                          transition: "background 0.4s ease",
+                        }} />
+                      ))}
+                    </div>
+                  </div>
+                  <LayerBreakdown layers={layers} />
+                </div>
+
+                <NotificationPreview symbol={activeSymbol} d={current} />
+
+                {/* Market overview text */}
+                {data?.overview?.global_theme && (
+                  <div style={{
+                    background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
+                    borderRadius: 16, padding: 16,
+                  }}>
+                    <div style={{ fontSize: 11, color: "#64748b", marginBottom: 10 }}>🌐 マーケット概況</div>
+                    <div style={{ fontSize: 13, color: "#94a3b8", lineHeight: 1.7 }}>
+                      {data.overview.global_theme}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ─── Footer ── */}
+      <footer style={{
+        borderTop: "1px solid rgba(255,255,255,0.04)",
+        padding: "12px 24px",
+        display: "flex", justifyContent: "space-between", alignItems: "center",
+        fontSize: 11, color: "#1e293b",
+      }}>
+        <span>ONO Estimator v6.1 — 5-Layer AI Engine</span>
+        <span>Powered by Gemini 2.0 Flash × SMC × Ichimoku × FRED</span>
+        <span>次のセッション: {session.next}</span>
+      </footer>
     </div>
   );
 }
