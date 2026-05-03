@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { createChart, ColorType, CrosshairMode } from "lightweight-charts";
+import { createChart, ColorType, CrosshairMode, CandlestickSeries, LineSeries } from "lightweight-charts";
 
 export default function TradingViewChart({ data, symbol }: { data: any[], symbol: string }) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
@@ -22,11 +22,9 @@ export default function TradingViewChart({ data, symbol }: { data: any[], symbol
       height: 450,
       crosshair: { mode: CrosshairMode.Normal },
       timeScale: { borderColor: "#F1F5F9", timeVisible: true, secondsVisible: false },
-    }) as any;
+    });
 
-    // 1. ローソク足
-    // @ts-ignore
-    const candlestickSeries = chart.addCandlestickSeries({
+    const candlestickSeries = chart.addSeries(CandlestickSeries, {
       upColor: "#0EA5E9",
       downColor: "#94A3B8",
       borderVisible: false,
@@ -38,26 +36,25 @@ export default function TradingViewChart({ data, symbol }: { data: any[], symbol
       open: d.open,
       high: d.high,
       low: d.low,
-      close: d.close
+      close: d.close,
     })));
 
-    // 2. 移動平均線 (MA25)
-    const maSeries = chart.addLineSeries({ color: "#FACC15", lineWidth: 2, title: "MA25" });
+    const maSeries = chart.addSeries(LineSeries, { color: "#FACC15", lineWidth: 2, title: "MA25" });
     maSeries.setData(data.map(d => ({ time: d.time, value: d.ma25 || 0 })));
 
-    // 3. ボリンジャーバンド (Upper)
-    const bbUpperSeries = chart.addLineSeries({ color: "#E2E8F0", lineWidth: 1, lineStyle: 2, title: "BB Upper" });
+    const bbUpperSeries = chart.addSeries(LineSeries, { color: "#E2E8F0", lineWidth: 1, lineStyle: 2, title: "BB Upper" });
     bbUpperSeries.setData(data.map(d => ({ time: d.time, value: d.bb_upper || 0 })));
-    
-    const bbLowerSeries = chart.addLineSeries({ color: "#E2E8F0", lineWidth: 1, lineStyle: 2, title: "BB Lower" });
+
+    const bbLowerSeries = chart.addSeries(LineSeries, { color: "#E2E8F0", lineWidth: 1, lineStyle: 2, title: "BB Lower" });
     bbLowerSeries.setData(data.map(d => ({ time: d.time, value: d.bb_lower || 0 })));
 
     chart.timeScale().fitContent();
 
     const handleResize = () => {
-      chart.applyOptions({ width: chartContainerRef.current?.clientWidth });
+      if (chartContainerRef.current) {
+        chart.applyOptions({ width: chartContainerRef.current.clientWidth });
+      }
     };
-
     window.addEventListener("resize", handleResize);
 
     return () => {
@@ -81,7 +78,7 @@ export default function TradingViewChart({ data, symbol }: { data: any[], symbol
   );
 }
 
-function BadgeItem({ color, label }: { color: string, label: string }) {
+function BadgeItem({ color, label }: { color: string; label: string }) {
   return (
     <div className="flex items-center gap-1.5">
       <div className={`w-2 h-2 rounded-full ${color}`} />
