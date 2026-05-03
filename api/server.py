@@ -119,6 +119,11 @@ async def estimation_loop():
                 ai_data = ai_analyzer.analyze_single(sym, res)
                 
                 if ai_data and "ai_text" in ai_data:
+                    # グローバルテーマを最新の分析で更新 (最初の成功銘柄を代表とする)
+                    if market_overview["last_update_ts"] < int(time.time()) - 300:
+                        market_overview["global_theme"] = ai_data["ai_text"][:100] + "..."
+                        market_overview["last_update_ts"] = int(time.time())
+
                     # 分析成功時のみ状態を上書きし、DB保存
                     for tf in TIMEFRAMES:
                         system_state[sym][tf].update({

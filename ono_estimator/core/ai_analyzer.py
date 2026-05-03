@@ -28,17 +28,22 @@ class GeminiAnalyzer:
         try:
             mtf = data.get("mtf", {})
             prompt = f"""
-投資ストラテジストとして、以下の銘柄の1分足および1時間足のデータに基づき、
-今後数分〜数十分の展開を200文字程度の日本語で具体的に分析・予測してください。
-また、予測価格と確信度も算出してください。
+Return ONLY a raw JSON object.
+As a professional investment strategist, analyze this asset: {symbol}
 
-【銘柄】: {symbol}
-【1分足(短期)】: スコア={mtf.get('1m', {}).get('score')}, RSI={mtf.get('1m', {}).get('rsi')}
-【1時間足(長期)】: スコア={mtf.get('1h', {}).get('score')}, 状態={mtf.get('1h', {}).get('theme')}
+[Market Data]
+- Short-term (1m): Score={mtf.get('1m', {}).get('score')}, RSI={mtf.get('1m', {}).get('rsi')}
+- Long-term (1h): Score={mtf.get('1h', {}).get('score')}, Theme={mtf.get('1h', {}).get('theme')}
 
-以下のJSON形式で出力してください。
+[Requirement]
+In the "ai_text" field, write a professional strategy (approx. 200 Japanese characters) covering:
+1. Current price trend analysis
+2. Technical indicators' rationale (RSI, MTF context)
+3. Specific future forecast for the next few minutes.
+
+JSON Format:
 {{
-  "ai_text": "分析内容（200文字程度の専門的な日本語）",
+  "ai_text": "分析内容（専門的な日本語200文字程度）",
   "predicted_price": 0.0,
   "probability": 0
 }}
