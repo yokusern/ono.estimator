@@ -48,7 +48,7 @@ const fetcher = async (url: string) => {
 // デフォルトURLを環境変数またはRenderの想定URLに設定
 const API_URL = (
   process.env.NEXT_PUBLIC_API_URL || 
-  "https://ono-estimator-backend.onrender.com"
+  "https://ono-estimator.onrender.com"
 ).replace(/\/$/, "");
 
 const SYMBOLS = ["USDJPY", "GOLD", "BTC", "JP225", "XAGUSD", "AUDJPY", "EURUSD", "EURJPY"];

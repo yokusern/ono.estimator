@@ -6,7 +6,8 @@
 export async function GET() {
   const backendUrl = (
     process.env.NEXT_PUBLIC_API_URL || 
-    "https://ono-estimator-backend.onrender.com"
+    "https://ono-estimator.onrender.com"
+
   ).replace(/\/$/, "");
 
   try {
