@@ -7,6 +7,7 @@ class TimeFrame(Enum):
     H1 = "1h"
     H4 = "4h"
     D1 = "1d"
+    W1 = "1wk"
 
 class SignalStatus(Enum):
     NONE = "Wait"

@@ -1,0 +1,244 @@
+//@version=5
+indicator("ONO Estimator — Full Signal Suite", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// ═══════════════════════════════════════════════════════════════
+// ONO Estimator — TradingView Pine Script v1.0
+// MTカリキュラム全18理論 + 実践スキャルピング戦略の可視化
+// ═══════════════════════════════════════════════════════════════
+
+// ─── 設定パラメータ ────────────────────────────────────────────
+grp_main   = "メイン設定"
+grp_liq    = "Liquidity Sweep"
+grp_wick   = "ヒゲ否定"
+grp_range  = "レンジ検出"
+grp_rsi_bb = "RSI on BB"
+grp_ema    = "EMAクロス"
+grp_gran   = "グランビル"
+grp_fib    = "フィボナッチ"
+grp_exhaust = "勢い枯れ"
+
+show_liq    = input.bool(true,  "Liquidity Sweepを表示",  group=grp_liq)
+show_wick   = input.bool(true,  "ヒゲ否定を表示",          group=grp_wick)
+show_range  = input.bool(true,  "レンジ背景色を表示",      group=grp_range)
+show_gran   = input.bool(true,  "グランビルラベルを表示",  group=grp_gran)
+show_ema    = input.bool(true,  "EMAクロスを表示",         group=grp_ema)
+show_fib    = input.bool(true,  "フィボナッチを表示",      group=grp_fib)
+show_exhaust = input.bool(true, "勢い枯れマーカーを表示", group=grp_exhaust)
+
+lookback   = input.int(20, "Liquidity Sweep ルックバック", minval=10, maxval=50, group=grp_liq)
+bb_ratio   = input.float(0.6, "レンジ BB幅比率",  minval=0.3, maxval=0.9, step=0.05, group=grp_range)
+atr_ratio  = input.float(0.7, "レンジ ATR比率",  minval=0.3, maxval=0.9, step=0.05, group=grp_range)
+ema_fast   = input.int(8,  "EMA 短期",  minval=3,  maxval=20,  group=grp_ema)
+ema_slow   = input.int(21, "EMA 中期",  minval=10, maxval=50,  group=grp_ema)
+ma200_period = input.int(200, "MA200 期間", group=grp_main)
+fib_lookback = input.int(50, "フィボナッチ ルックバック", minval=20, maxval=200, group=grp_fib)
+rsi_period = input.int(14, "RSI 期間", group=grp_rsi_bb)
+rsi_bb_len = input.int(20, "RSI on BB 期間", group=grp_rsi_bb)
+
+// ─── MA200（グランビル基準線）─────────────────────────────────
+ma200 = ta.sma(close, ma200_period)
+plot(ma200, "MA200", color=color.new(color.yellow, 0), linewidth=2)
+
+// ─── EMA クロス（M-1）────────────────────────────────────────
+ema_f = ta.ema(close, ema_fast)
+ema_s = ta.ema(close, ema_slow)
+plot(ema_f, "EMA Fast", color=color.new(color.aqua, 30), linewidth=1)
+plot(ema_s, "EMA Slow", color=color.new(color.purple, 30), linewidth=1)
+
+golden_cross = ta.crossover(ema_f, ema_s)
+dead_cross   = ta.crossunder(ema_f, ema_s)
+
+if show_ema and golden_cross
+    label.new(bar_index, low * 0.9998, "GC", color=color.new(color.green, 0),
+              textcolor=color.white, style=label.style_label_up, size=size.small)
+if show_ema and dead_cross
+    label.new(bar_index, high * 1.0002, "DC", color=color.new(color.red, 0),
+              textcolor=color.white, style=label.style_label_down, size=size.small)
+
+// ─── Liquidity Sweep（H-5 最重要）────────────────────────────
+recent_high = ta.highest(high, lookback)[2]
+recent_low  = ta.lowest(low,   lookback)[2]
+
+prev_low    = low[1]
+prev_high   = high[1]
+prev_close  = close[1]
+prev_open   = open[1]
+
+// Bull Sweep: 前の足が安値を下抜けてヒゲで戻った
+prev_lower_wick = math.min(prev_open, prev_close) - prev_low
+prev_range      = prev_high - prev_low + 0.0001
+bull_sweep = prev_low < recent_low and
+             prev_close > recent_low and
+             prev_close > prev_open and
+             (prev_lower_wick / prev_range) > 0.3
+
+// Bear Sweep: 前の足が高値を上抜けてヒゲで戻った
+prev_upper_wick = prev_high - math.max(prev_open, prev_close)
+bear_sweep = prev_high > recent_high and
+             prev_close < recent_high and
+             prev_close < prev_open and
+             (prev_upper_wick / prev_range) > 0.3
+
+// 再ブレイク確認
+bull_rebreak = bull_sweep and close > prev_high
+bear_rebreak = bear_sweep and close < prev_low
+
+if show_liq and bull_rebreak
+    label.new(bar_index, low,
+              "💦 BUY\nL.SWEEP", color=color.new(color.teal, 0),
+              textcolor=color.white, style=label.style_label_up, size=size.normal)
+
+if show_liq and bear_rebreak
+    label.new(bar_index, high,
+              "💦 SELL\nL.SWEEP", color=color.new(color.maroon, 0),
+              textcolor=color.white, style=label.style_label_down, size=size.normal)
+
+// Sweep 待機中（矢印のみ）
+plotshape(show_liq and bull_sweep and not bull_rebreak,
+          "Bull Sweep Pending", shape.triangleup,
+          location.belowbar, color.new(color.green, 40), size=size.tiny)
+plotshape(show_liq and bear_sweep and not bear_rebreak,
+          "Bear Sweep Pending", shape.triangledown,
+          location.abovebar, color.new(color.red, 40), size=size.tiny)
+
+// ─── ヒゲ否定（H-7）─────────────────────────────────────────
+last_body_high = math.max(open, close)
+last_body_low  = math.min(open, close)
+prev_body_high = math.max(prev_open, prev_close)
+prev_body_low  = math.min(prev_open, prev_close)
+
+bull_denial = prev_low < prev_body_low and
+              last_body_low > prev_low and
+              close > prev_close
+
+bear_denial = prev_high > prev_body_high and
+              last_body_high < prev_high and
+              close < prev_close
+
+if show_wick and bull_denial
+    plotshape(true, "Bull Denial", shape.diamond,
+              location.belowbar, color.new(color.lime, 0), size=size.small)
+
+if show_wick and bear_denial
+    plotshape(true, "Bear Denial", shape.diamond,
+              location.abovebar, color.new(color.fuchsia, 0), size=size.small)
+
+// ─── レンジ検出（H-10）背景色 ────────────────────────────────
+bb_ma  = ta.sma(close, 20)
+bb_std = ta.stdev(close, 20)
+bb_width     = bb_std * 2
+bb_width_avg = ta.sma(bb_width, 20)
+bb_squeezed  = bb_width < bb_width_avg * bb_ratio
+
+tr      = math.max(high - low, math.abs(high - close[1]), math.abs(low - close[1]))
+atr_now = ta.sma(tr, 14)
+atr_avg = ta.sma(atr_now, 20)
+atr_low = atr_now < atr_avg * atr_ratio
+
+is_range = bb_squeezed and atr_low
+
+bgcolor(show_range and is_range ? color.new(color.gray, 88) : na,
+        title="レンジ背景色")
+
+// レンジブレイクアウト検出
+range_high_20 = ta.highest(high, 20)
+range_low_20  = ta.lowest(low,   20)
+breakout_up   = is_range[1] and close > range_high_20[1]
+breakout_down = is_range[1] and close < range_low_20[1]
+
+plotshape(show_range and breakout_up,
+          "BreakoutUp", shape.arrowup,
+          location.belowbar, color.new(color.yellow, 0), size=size.normal)
+plotshape(show_range and breakout_down,
+          "BreakoutDown", shape.arrowdown,
+          location.abovebar, color.new(color.yellow, 0), size=size.normal)
+
+// ─── グランビルパターンラベル（H-4）─────────────────────────
+ma14 = ta.sma(close, 14)
+ma14_up = ma14 > ma14[1] and ma14[1] > ma14[2]
+ma14_dn = ma14 < ma14[1] and ma14[1] < ma14[2]
+
+// グランビル買い② (最重要): 上昇MA + 押し目 + 回帰
+gran_buy2  = ma14_up and close[1] <= ma14[1] * 1.002 and close > close[1]
+// グランビル売り② (最重要): 下降MA + 戻り + 回帰
+gran_sell2 = ma14_dn and close[1] >= ma14[1] * 0.998 and close < close[1]
+
+if show_gran and gran_buy2
+    label.new(bar_index, low,
+              "G②買", color=color.new(color.blue, 0),
+              textcolor=color.white, style=label.style_label_up, size=size.small)
+
+if show_gran and gran_sell2
+    label.new(bar_index, high,
+              "G②売", color=color.new(color.orange, 0),
+              textcolor=color.white, style=label.style_label_down, size=size.small)
+
+// ─── フィボナッチリトレースメント（H-15）──────────────────────
+swing_high_fib = ta.highest(high, fib_lookback)
+swing_low_fib  = ta.lowest(low,   fib_lookback)
+diff_fib       = swing_high_fib - swing_low_fib
+
+fib_500 = swing_high_fib - diff_fib * 0.500
+fib_618 = swing_high_fib - diff_fib * 0.618
+fib_382 = swing_high_fib - diff_fib * 0.382
+
+// フィボラインは水平線として表示
+plot(show_fib ? fib_500 : na, "Fib 50%",  color=color.new(color.orange, 20), linewidth=1, style=plot.style_line)
+plot(show_fib ? fib_618 : na, "Fib 61.8%", color=color.new(color.red,   20), linewidth=1, style=plot.style_line)
+plot(show_fib ? fib_382 : na, "Fib 38.2%", color=color.new(color.green, 20), linewidth=1, style=plot.style_line)
+
+near_fib_500 = math.abs(close - fib_500) / fib_500 < 0.002
+near_fib_618 = math.abs(close - fib_618) / fib_618 < 0.002
+
+if show_fib and near_fib_500
+    label.new(bar_index, fib_500, "Fib50%", color=color.new(color.orange, 0),
+              textcolor=color.white, style=label.style_label_right, size=size.tiny)
+if show_fib and near_fib_618
+    label.new(bar_index, fib_618, "Fib61.8%", color=color.new(color.red, 0),
+              textcolor=color.white, style=label.style_label_right, size=size.tiny)
+
+// ─── RSI on BB（サブチャート）────────────────────────────────
+rsi_val = ta.rsi(close, rsi_period)
+rsi_ma  = ta.sma(rsi_val, rsi_bb_len)
+rsi_std = ta.stdev(rsi_val, rsi_bb_len)
+rsi_upper = rsi_ma + rsi_std * 2
+rsi_lower = rsi_ma - rsi_std * 2
+
+// RSI on BB はサブチャートに表示（overlay=false のインジケーターとして別途追加推奨）
+// ここでは過熱シグナルのみオーバーレイに表示
+rsi_above_bb = rsi_val > rsi_upper
+rsi_below_bb = rsi_val < rsi_lower
+
+bgcolor(rsi_above_bb ? color.new(color.red,   92) : na, title="RSI BB上抜け（過熱）")
+bgcolor(rsi_below_bb ? color.new(color.teal,  92) : na, title="RSI BB下抜け（過冷）")
+
+// ─── 勢い枯れ早期警告（L-1）────────────────────────────────
+[macd_line, macd_signal, macd_hist] = ta.macd(close, 12, 26, 9)
+
+hist_decay = math.abs(macd_hist) < math.abs(macd_hist[1]) and
+             math.abs(macd_hist[1]) < math.abs(macd_hist[2])
+
+bb_upper_ex = bb_ma + bb_std * 1.5
+bb_lower_ex = bb_ma - bb_std * 1.5
+
+exhausted_sell = show_exhaust and hist_decay and close > bb_upper_ex
+exhausted_buy  = show_exhaust and hist_decay and close < bb_lower_ex
+
+plotshape(exhausted_sell, "Exhaustion Sell", shape.xcross,
+          location.abovebar, color.new(color.orange, 0), size=size.small)
+plotshape(exhausted_buy,  "Exhaustion Buy",  shape.xcross,
+          location.belowbar, color.new(color.orange, 0), size=size.small)
+
+// ─── アラート ────────────────────────────────────────────────
+alertcondition(bull_rebreak,    "💦 BULL Liquidity Sweep 完成", "BUY Liquidity Sweep — 再ブレイク確認")
+alertcondition(bear_rebreak,    "💦 BEAR Liquidity Sweep 完成", "SELL Liquidity Sweep — 再ブレイク確認")
+alertcondition(bull_denial,     "ヒゲ否定 BUY",                "下ヒゲ否定 — BUY転換シグナル")
+alertcondition(bear_denial,     "ヒゲ否定 SELL",               "上ヒゲ否定 — SELL転換シグナル")
+alertcondition(golden_cross,    "EMA ゴールデンクロス",         "EMA8/21 ゴールデンクロス")
+alertcondition(dead_cross,      "EMA デッドクロス",             "EMA8/21 デッドクロス")
+alertcondition(breakout_up,     "レンジ上方ブレイク",           "レンジ終了 — 上方ブレイクアウト")
+alertcondition(breakout_down,   "レンジ下方ブレイク",           "レンジ終了 — 下方ブレイクアウト")
+alertcondition(gran_buy2,       "グランビル買い②",              "グランビル最重要パターン — 買い②（押し目）")
+alertcondition(gran_sell2,      "グランビル売り②",              "グランビル最重要パターン — 売り②（戻り売り）")
+alertcondition(exhausted_sell,  "勢い枯れ SELL予兆",            "上値で勢い枯れ — SELL転換に注意")
+alertcondition(exhausted_buy,   "勢い枯れ BUY予兆",             "下値で勢い枯れ — BUY転換に注意")

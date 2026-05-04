@@ -366,15 +366,26 @@ export default function Dashboard() {
     { ...swrOpts, refreshInterval: 30000 }
   );
 
+  // M-10: Supabase キャッシュ層（Render 停止時フォールバック）
+  const { data: supabaseCacheRaw } = useSWR(
+    error ? `/api/supabase-cache` : null, fetcher,
+    { revalidateOnFocus: false, refreshInterval: 90000 }
+  );
+
   const isConnected = !error && !isLoading;
-  const current = useMemo(() => data?.data?.[activeSymbol] || {}, [data, activeSymbol]);
+  // Render が停止している場合は Supabase キャッシュを使用
+  const effectiveData = error && supabaseCacheRaw?.data ? supabaseCacheRaw : data;
+  const current = useMemo(
+    () => effectiveData?.data?.[activeSymbol] || {},
+    [effectiveData, activeSymbol]
+  );
   const chartData: any[] = chartRaw?.data || [];
   const overview = useMemo(() => {
     const rows = overviewRaw?.symbols;
     if (!Array.isArray(rows)) return {} as Record<string, any>;
     return Object.fromEntries(rows.map((row: any) => [row.symbol, row]));
   }, [overviewRaw]);
-  const allData = data?.data || {};
+  const allData = effectiveData?.data || {};
 
   const dir = current?.status || current?.direction || "WAIT";
   const score = Number(current?.score || 0);

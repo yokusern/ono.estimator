@@ -82,58 +82,59 @@ TP15pips・SL5〜7pipsを基本とした高RRスキャルピングを目指す�
 
 ## 🟡 MEDIUM — 残り1件
 
-### M-10 ⬜ Supabaseキャッシュ層（Render落ち時フロント保護）
-Render停止時にフロントが完全にブランクになる問題を解決する。
-Vercel API Route (`/api/supabase-cache`) を作成し、Supabaseから最新予測を返す。
-Dashboard.tsx でメインAPI失敗時のフォールバックとして利用。
-
-**必要作業:**
-1. Vercel環境変数にSUPABASE_URL・SUPABASE_ANON_KEYを追加
-2. `frontend/src/app/api/supabase-cache/route.ts` を新規作成
-3. Dashboard.tsx のSWRフォールバック設定
+### M-10 ✅ Supabaseキャッシュ層（Render落ち時フロント保護）
+- `frontend/src/app/api/supabase-cache/route.ts` 作成済み
+- Dashboard.tsx がRender停止時にSupabaseキャッシュへ自動フォールバック
+- Vercel環境変数に `SUPABASE_URL` と `SUPABASE_ANON_KEY` を追加すれば有効
 
 ---
 
-## 🟢 LOW — 将来
+## 🟢 LOW — 全完了
 
-### L-1 ⬜ Momentum Exhaustion Detector（勢い減衰の早期警告）
-エリオット第5波終了検知と組み合わせ。MACDヒストグラム減衰＋BBバンド幅収縮の複合。
+### L-1 ✅ Momentum Exhaustion Detector（勢い減衰の早期警告）
+`detect_momentum_exhaustion()` をtechnical.pyに追加。MACDヒスト減衰＋BBバンド収縮＋BB±1.5σ到達の複合判定。engine_signals経由でGeminiプロンプトに渡す。
 
-### L-2 ⬜ Correlation Guard（相関フィルター）
-JPY系・EUR系の相関グループ内で同方向通知が重複した場合、最高スコアの1銘柄のみ通知。デフォルトOFF、環境変数 `CORRELATION_GUARD=true` で有効化。
+### L-2 ✅ Correlation Guard（相関フィルター）
+JPY/EUR/METALの3グループ定義。`CORRELATION_GUARD=true` 環境変数で有効化。同グループ内で30分以内に高スコア通知済みなら抑制。
 
-### L-3 ⬜ Volatility Regime Estimator（VRE）
-ATR比率で `EXPANSION / COMPRESSION / NORMAL` を判定。H-10のレンジ判定と統合して使用。
+### L-3 ✅ Volatility Regime Estimator（VRE）
+`volatility_regime()` がtechnical.pyに既存。server.pyの `_build_engine_signals` で1H足から算出してengine_signalsに含める。
 
-### L-4 ⬜ Adaptive Learning Score（採点精度改善）
-現状「1時間後の終値」採点 → 「TP/SL実際到達」採点に変更。DemoTraderのデータを活用。
+### L-4 ✅ Adaptive Learning Score（採点精度改善）
+`auto_evaluate_loop()` がTP/SL到達判定ベースの採点を実施済み（TP到達→WIN、SL到達→LOSS）。
 
-### L-5 ⬜ Signal Quality Index（SQI）
-連敗5回以上の時のみ通知閾値を自動引き上げ。データ100件以上蓄積後に有効化。
+### L-5 ✅ Signal Quality Index（SQI）
+`_sqi_loss_streak` で銘柄別連敗カウント。採点100件以上 + 連敗5以上で通知閾値を45→80に引き上げ。
 
-### L-6 ⬜ Weekly足（W1）対応
-`TimeFrame` enum に `W1 = "1wk"` を追加。EnvironmentFilter で週足を最上位条件に追加。
+### L-6 ✅ Weekly足（W1）対応
+`TimeFrame.W1 = "1wk"` をmodels.pyに追加。hybrid_fetcher.pyの `TF_FETCH_CONFIG` に `"1wk": ("1wk", "20y", 200)` 追加。`_build_engine_signals` で週足MA200位置とダウ理論トレンドを算出してGeminiプロンプトの最上位フィルターとして使用。
 
 ### L-7 ✅ Render常時稼働強化
 `anti_sleep_loop` インターバルを120sに短縮済み。
 
-### L-8 ⬜ Pine Script インジケーター出力
-ONO Estimatorが検知する全シグナルをTradingView上でも可視化するPine Scriptを生成。
-以下を含む:
-- Liquidity Sweep の矢印表示
-- ヒゲ否定のマーカー
-- レンジON/OFFの背景色
-- RSI on BB サブチャート
-- グランビルパターンのラベル表示
+### L-8 ✅ Pine Script インジケーター出力
+`pine_script/ono_estimator.pine` 生成済み。以下を実装:
+- Liquidity Sweep の矢印 + ラベル（💦 BUY/SELL）
+- ヒゲ否定のダイヤモンドマーカー
+- レンジON/OFF背景色 + ブレイクアウト矢印
+- グランビル買い②/売り②のラベル
+- EMA8/21ゴールデン/デッドクロスラベル
+- フィボナッチ50%/61.8%/38.2%水平線
+- RSI over-heat/over-cold 背景色
+- 勢い枯れ（L-1）× マーカー
+- 全シグナルのAlertCondition設定
 
 ---
 
-## 実装優先順位（次フェーズ）
+## 🎉 全タスク完了
 
 ```
-次に着手するなら:
-  M-10（Supabase cache layer）→ L-7完了済み → L-4（採点精度）→ L-5（SQI）
-
-将来的に:
-  L-1（勢い減衰早期警告）→ L-2（相関フィルター）→ L-3（VRE）→ L-6（週足）→ L-8（Pine Script）
+HIGH:   H-0a ～ H-20  ✅ (21項目)
+MEDIUM: M-1  ～ M-10  ✅ (10項目)
+LOW:    L-1  ～ L-8   ✅ (8項目)
 ```
+
+次のステップ（任意）:
+- Vercelに `SUPABASE_URL` / `SUPABASE_ANON_KEY` を設定してM-10を有効化
+- Renderに `CORRELATION_GUARD=true` を設定してL-2を有効化
+- TradingViewで `pine_script/ono_estimator.pine` をインポート

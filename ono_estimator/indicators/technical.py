@@ -568,6 +568,76 @@ class TechnicalIndicators:
             "signal":          signal,
         }
 
+    # ── L-1: 勢い枯れ早期警告（Momentum Exhaustion Detector）────
+    @staticmethod
+    def detect_momentum_exhaustion(df: pd.DataFrame) -> dict:
+        """
+        勢い枯れ早期警告 (L-1):
+        MACDヒストグラム減衰 + BBバンド幅収縮 + 価格がBBエクストリーム到達の複合判定。
+        エリオット第5波終了シグナルと組み合わせて使用する。
+        """
+        close = df["close"]
+        if len(close) < 30:
+            return {"exhausted": False, "score": 0, "signal": "NONE",
+                    "direction_bias": "NONE", "reasons": []}
+
+        # MACD ヒストグラム減衰
+        exp12 = close.ewm(span=12, adjust=False).mean()
+        exp26 = close.ewm(span=26, adjust=False).mean()
+        macd_line = exp12 - exp26
+        signal_line = macd_line.ewm(span=9, adjust=False).mean()
+        hist = macd_line - signal_line
+        hist_decay = (abs(float(hist.iloc[-1])) < abs(float(hist.iloc[-2])) <
+                      abs(float(hist.iloc[-3])))
+
+        # BB バンド幅収縮
+        ma20 = close.rolling(20).mean()
+        std20 = close.rolling(20).std()
+        bb_width_now  = float((std20 * 2).iloc[-1])
+        bb_width_avg  = float((std20 * 2).rolling(5).mean().iloc[-1])
+        bb_compressing = bb_width_avg > 0 and bb_width_now < bb_width_avg * 0.9
+
+        # 価格が BB ±1.5σ 付近（エクストリーム）
+        ma_now  = float(ma20.iloc[-1])
+        std_now = float(std20.iloc[-1])
+        cur     = float(close.iloc[-1])
+        near_upper = std_now > 0 and cur > ma_now + std_now * 1.5
+        near_lower = std_now > 0 and cur < ma_now - std_now * 1.5
+
+        score = 0
+        reasons = []
+        if hist_decay:
+            score += 40
+            reasons.append("MACDヒスト減衰")
+        if bb_compressing:
+            score += 25
+            reasons.append("BBバンド収縮")
+        if near_upper and hist_decay:
+            score += 35
+            reasons.append("上BB到達+勢い減衰→売り枯れ予兆")
+        elif near_lower and hist_decay:
+            score += 35
+            reasons.append("下BB到達+勢い減衰→買い枯れ予兆")
+
+        exhausted = score >= 60
+        direction_bias = "NONE"
+        if exhausted:
+            if near_upper:
+                direction_bias = "REVERSAL_SELL"
+            elif near_lower:
+                direction_bias = "REVERSAL_BUY"
+
+        return {
+            "exhausted":      exhausted,
+            "score":          score,
+            "hist_decay":     bool(hist_decay),
+            "bb_compressing": bool(bb_compressing),
+            "near_extreme":   bool(near_upper or near_lower),
+            "direction_bias": direction_bias,
+            "reasons":        reasons,
+            "signal":         direction_bias if exhausted else "NONE",
+        }
+
 
 class PriceAction:
     @staticmethod

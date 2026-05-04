@@ -147,6 +147,36 @@ cot_cache    = {"data": {}, "ts": 0}
 _gemini_times: deque = deque(maxlen=60)
 _startup_done = False
 
+# ─── L-2: Correlation Guard ────────────────────────────────────
+_CORR_GROUPS = {
+    "JPY":   ["USDJPY=X", "AUDJPY=X", "EURJPY=X"],
+    "EUR":   ["EURUSD=X", "EURJPY=X"],
+    "METAL": ["GC=F", "SI=F"],
+}
+_CORRELATION_GUARD = os.getenv("CORRELATION_GUARD", "false").lower() == "true"
+_corr_notified: dict = {}   # {group: {"sym": sym, "score": score, "ts": ts}}
+
+def _corr_filter_allow(sym: str, score: float) -> bool:
+    """同グループ内で直近30分以内に高スコアが通知済みなら抑制。"""
+    if not _CORRELATION_GUARD:
+        return True
+    now = time.time()
+    allowed = True
+    for group, members in _CORR_GROUPS.items():
+        if sym not in members:
+            continue
+        cached = _corr_notified.get(group, {})
+        if now - cached.get("ts", 0) < 1800 and cached.get("score", 0) >= score:
+            print(f"[CorrGuard] {sym} suppressed — {cached.get('sym')} already notified in {group}")
+            allowed = False
+        else:
+            _corr_notified[group] = {"sym": sym, "score": score, "ts": now}
+    return allowed
+
+# ─── L-5: Signal Quality Index (SQI) ──────────────────────────
+_sqi_loss_streak: dict = {sym: 0 for sym in SYMBOLS}
+_sqi_total_scored = 0
+
 # ─── Services ──────────────────────────────────────────────────
 fetcher     = HybridDataFetcher()
 engine_v2   = ONOPredictionEngineV2() if _V2 else None
@@ -519,6 +549,34 @@ def _build_engine_signals(sym: str, tf_results: dict, df_store: dict) -> dict:
             elliott = TechnicalIndicators.count_elliott_wave(df1h["close"])
         except Exception: pass
 
+    # ── L-1: 勢い枯れ早期警告（Momentum Exhaustion Detector）1H ──
+    exhaustion_result = {"exhausted": False, "score": 0, "signal": "NONE",
+                         "direction_bias": "NONE", "reasons": []}
+    if df1h is not None and len(df1h) >= 30:
+        try:
+            exhaustion_result = TechnicalIndicators.detect_momentum_exhaustion(df1h)
+        except Exception: pass
+
+    # ── L-6: 週足（W1）トレンド ──
+    weekly_trend = "N/A"
+    weekly_ma200_position = "N/A"
+    try:
+        df_wk = fetcher.get_analysis_df(sym, "1wk")
+        if df_wk is not None and len(df_wk) >= 200:
+            ma200_wk = df_wk["close"].rolling(200).mean()
+            cur_wk   = float(df_wk["close"].iloc[-1])
+            weekly_ma200_position = "ABOVE" if cur_wk > float(ma200_wk.iloc[-1]) else "BELOW"
+            # 週足ダウ理論（簡易）: 直近3週の高値・安値
+            h1, h2, h3 = df_wk["high"].iloc[-1], df_wk["high"].iloc[-4], df_wk["high"].iloc[-8]
+            l1, l2, l3 = df_wk["low"].iloc[-1],  df_wk["low"].iloc[-4],  df_wk["low"].iloc[-8]
+            if h1 > h2 > h3 and l1 > l2 > l3:
+                weekly_trend = "WEEKLY_UP"
+            elif h1 < h2 < h3 and l1 < l2 < l3:
+                weekly_trend = "WEEKLY_DOWN"
+            else:
+                weekly_trend = "WEEKLY_RANGE"
+    except Exception: pass
+
     # ── Fear&Greed ──
     vix_val = fred_cache.get("data", {}).get("VIXCLS", {})
     if isinstance(vix_val, dict): vix_val = vix_val.get("value", 20)
@@ -564,6 +622,10 @@ def _build_engine_signals(sym: str, tf_results: dict, df_store: dict) -> dict:
     abs_sig = absorption_result.get("signal", "NONE")
     if abs_sig not in ("NONE", ""):
         iron_patterns.append(f"Absorption:{abs_sig}")
+    # L-1: 勢い枯れ
+    exh_sig = exhaustion_result.get("signal", "NONE")
+    if exh_sig not in ("NONE", ""):
+        iron_patterns.append(f"Exhaustion:{exh_sig}")
 
     session_str = get_active_session(datetime.utcnow().hour)
 
@@ -672,6 +734,14 @@ def _build_engine_signals(sym: str, tf_results: dict, df_store: dict) -> dict:
         "bull_absorption":   absorption_result.get("bull_absorption", False),
         "bear_absorption":   absorption_result.get("bear_absorption", False),
         "absorption_wick_ratio": absorption_result.get("wick_ratio", 0.0),
+        # L-1: 勢い枯れ早期警告
+        "exhaustion_signal":    exhaustion_result.get("signal", "NONE"),
+        "exhausted":            exhaustion_result.get("exhausted", False),
+        "exhaustion_bias":      exhaustion_result.get("direction_bias", "NONE"),
+        "exhaustion_reasons":   exhaustion_result.get("reasons", []),
+        # L-6: 週足トレンド
+        "weekly_trend":         weekly_trend,
+        "weekly_ma200":         weekly_ma200_position,
     }
 
 
@@ -947,8 +1017,15 @@ async def ai_loop():
                     market_overview["global_theme"] = (ai_data.get("ai_text") or "")[:80] + "..."
                     market_overview["last_update_ts"] = int(time.time())
 
+                # L-5: SQI — 連敗5以上の場合は通知閾値を引き上げ
+                sqi_streak = _sqi_loss_streak.get(sym, 0)
+                notify_threshold = 80 if (_sqi_total_scored >= 100 and sqi_streak >= 5) else 45
+
+                # L-2: Correlation Guard（同グループ内重複通知抑制）
+                notify_allowed = _corr_filter_allow(sym, score)
+
                 # H-12: AI熟練トレーダー通知
-                if not is_locked and (should_notify or abs(score) >= 45 or prob >= 75):
+                if not is_locked and notify_allowed and (should_notify or abs(score) >= notify_threshold or prob >= 75):
                     try:
                         notifier.notify_ai_judgment(sym, ai_data)
                     except Exception as ne:
@@ -1093,7 +1170,24 @@ async def auto_evaluate_loop():
                         "entry_price": entry, "exit_price": cur_price, "pips_result": pips,
                     })
 
+                # L-5: SQI — 連敗カウント更新
+                ticker_key = next((k for k, v in SYM_SHORT.items() if v == sym_short), sym_short)
+                if outcome == "LOSS":
+                    _sqi_loss_streak[ticker_key] = _sqi_loss_streak.get(ticker_key, 0) + 1
+                elif outcome == "WIN":
+                    _sqi_loss_streak[ticker_key] = 0
+
             if evaluated > 0:
+                # L-5: 採点総数を更新（100件以上でSQI有効化）
+                global _sqi_total_scored
+                try:
+                    perf_total = db.get_performance_summary()
+                    _sqi_total_scored = sum(
+                        v.get("total", 0)
+                        for v in (perf_total.get("by_symbol") or {}).values()
+                        if isinstance(v, dict)
+                    )
+                except Exception: pass
                 print(f"[AutoEval] {evaluated}件 採点完了 (LOSS: {len(losses_this_run)}件)")
                 perf = db.get_performance_summary()
                 market_overview["history_stats"] = _load_history_stats()
