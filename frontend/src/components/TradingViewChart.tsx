@@ -101,7 +101,7 @@ export default function TradingViewChart({
 
     chartRef.current = chart;
 
-    // ── 1. ローソク足 ────────────────────────────────────────
+    // ── 1. ローソク足（lightweight-charts 4.x: addCandlestickSeries。5系は addSeries + CandlestickSeries）─
     const candleSeries = chart.addCandlestickSeries({
       upColor:       "#10B981",
       downColor:     "#F43F5E",
