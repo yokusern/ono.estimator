@@ -175,6 +175,114 @@ class Notifier:
         except Exception as e:
             logger.error(f"[Discord] Error: {e}")
 
+    # ─── H-12: AI熟練トレーダー通知 ────────────────────────────
+    def notify_ai_judgment(self, symbol: str, ai_data: dict) -> None:
+        """AI分析結果を熟練トレーダー通知フォーマットで送信する"""
+        webhook = self.default_webhook
+        if not webhook:
+            return
+
+        direction = ai_data.get("direction", "WAIT")
+        if direction == "WAIT" and not ai_data.get("should_notify"):
+            return
+
+        # デバウンス（同一シグナルの連続防止）
+        entry_price = ai_data.get("entry_price") or ai_data.get("entry", 0) or 0
+        sig_key = self._make_signal_key(symbol, direction, float(entry_price))
+        if self._last_signal_key.get(symbol) == sig_key:
+            return
+        self._last_signal_key[symbol] = sig_key
+
+        dir_icon = "🟢🟢" if direction == "BUY" else "🔴🔴" if direction == "SELL" else "⚪"
+        conf = ai_data.get("confidence", ai_data.get("signal_quality", "LOW"))
+
+        entry  = ai_data.get("entry_price") or ai_data.get("entry", "---")
+        tp     = ai_data.get("tp_price")    or ai_data.get("tp1", "---")
+        sl     = ai_data.get("sl_price")    or ai_data.get("sl", "---")
+        rr     = ai_data.get("rr_ratio", "---")
+        prob   = ai_data.get("probability", 0)
+        ai_text     = ai_data.get("ai_text", "")
+        awareness   = ai_data.get("awareness_text", "")
+        enter_demo  = ai_data.get("should_enter_demo", False)
+
+        def fmt(v, digits=3):
+            return f"{v:.{digits}f}" if isinstance(v, float) else str(v)
+
+        rr_str = fmt(rr, 2) if isinstance(rr, float) else str(rr)
+        sep = "━" * 17
+
+        msg_lines = [
+            f"🤖 **ONO Estimator AI判断**",
+            f"",
+            f"📊 **{symbol} — {direction}** {dir_icon}",
+            sep,
+            ai_text,
+            "",
+            f"Entry: {fmt(entry)} | TP: {fmt(tp)} | SL: {fmt(sl)} | RR: {rr_str}",
+            f"確信度: {conf} | 勝率予測: {prob}%",
+            sep,
+        ]
+        if awareness:
+            msg_lines += [f"📚 **今回意識した理論:**", awareness]
+        if enter_demo:
+            msg_lines.append(f"🎮 DemoTrader: **{direction}** エントリー実行")
+
+        msg_lines.append(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M JST')}")
+
+        content = "\n".join(msg_lines)
+        color = 0x00C851 if direction == "BUY" else 0xFF4444 if direction == "SELL" else 0x888888
+
+        try:
+            payload = {
+                "username": "ONO Estimator AI",
+                "embeds": [{
+                    "description": content[:4000],
+                    "color": color,
+                    "footer": {"text": "ONO Estimator Ultra v6.2 — AI Trader"},
+                }],
+            }
+            self.session.post(webhook, json=payload, timeout=5)
+        except Exception as e:
+            logger.error(f"[Notifier] notify_ai_judgment error: {e}")
+
+        self._log_notification(symbol, direction, prob)
+
+    # ─── H-12: デモ売買結果通知 ──────────────────────────────────
+    def send_demo_result(self, pos: dict, close_price: float,
+                         result: str, pips: float, win_rate=None) -> None:
+        webhook = self.default_webhook
+        if not webhook:
+            return
+        sym       = pos.get("symbol", "")
+        direction = pos.get("direction", "")
+        entry     = pos.get("entry_price", 0)
+        reason    = pos.get("reason", "")
+        icon      = "✅" if result == "WIN" else "❌"
+        pips_sign = "+" if result == "WIN" else "-"
+        wr_str    = f"{win_rate:.1f}%" if win_rate is not None else "---"
+
+        msg = (
+            f"{icon} **DemoTrader {result}**\n"
+            f"{sym} {direction}\n"
+            f"Entry: {entry:.3f} → Close: {close_price:.3f}\n"
+            f"{pips_sign}{abs(pips):.1f} pips\n\n"
+        )
+        if reason:
+            msg += f"📚 **エントリー根拠:**\n{reason}\n\n"
+
+        # 通算成績を取得して追記
+        msg += f"📊 通算勝率: {wr_str}"
+
+        try:
+            color = 0x00C851 if result == "WIN" else 0xFF4444
+            payload = {
+                "username": "ONO Estimator DemoTrader",
+                "embeds": [{"description": msg[:2000], "color": color}],
+            }
+            self.session.post(webhook, json=payload, timeout=5)
+        except Exception as e:
+            logger.error(f"[Notifier] send_demo_result error: {e}")
+
     # ─── LINE 送信 ────────────────────────────────────────────
     def _send_line(self, symbol: str, score: float, ai_data: dict, price: float, session: str):
         prob   = ai_data.get("probability", "---")

@@ -263,6 +263,78 @@ class SupabaseClient:
         except Exception as e:
             logger.warning(f"[Supabase] save_notification error: {e}")
 
+    # ─── demo_positions (H-11) ────────────────────────────────
+    def save_demo_position(self, pos: dict) -> Optional[str]:
+        if not self.client:
+            return None
+        try:
+            row = {
+                "symbol":      str(pos.get("symbol", "")),
+                "direction":   str(pos.get("direction", "")),
+                "entry_price": _f(pos.get("entry_price")),
+                "tp_price":    _f(pos.get("tp_price")),
+                "sl_price":    _f(pos.get("sl_price")),
+                "reason":      str(pos.get("reason", ""))[:500],
+                "status":      "OPEN",
+                "opened_at":   pos.get("opened_at") or datetime.utcnow().isoformat(),
+            }
+            res = self.client.table("demo_positions").insert(row).execute()
+            if res.data:
+                return res.data[0].get("id")
+        except Exception as e:
+            logger.warning(f"[Supabase] save_demo_position error: {e}")
+        return None
+
+    def close_demo_position(self, symbol: str, close_price: float,
+                             result: str, pips: float) -> Optional[float]:
+        """ポジションを決済し、最新の勝率を返す"""
+        if not self.client:
+            return None
+        try:
+            self.client.table("demo_positions").update({
+                "close_price": close_price,
+                "result":      result,
+                "pips":        round(pips, 1),
+                "status":      "CLOSED",
+                "closed_at":   datetime.utcnow().isoformat(),
+            }).eq("symbol", symbol).eq("status", "OPEN").execute()
+            return self.get_demo_win_rate()
+        except Exception as e:
+            logger.warning(f"[Supabase] close_demo_position error: {e}")
+        return None
+
+    def get_demo_win_rate(self) -> Optional[float]:
+        if not self.client:
+            return None
+        try:
+            res = self.client.table("demo_positions")\
+                .select("result")\
+                .eq("status", "CLOSED")\
+                .execute()
+            rows = res.data or []
+            if not rows:
+                return None
+            wins  = sum(1 for r in rows if r.get("result") == "WIN")
+            total = len(rows)
+            return round(wins / total * 100, 1) if total else None
+        except Exception as e:
+            logger.warning(f"[Supabase] get_demo_win_rate error: {e}")
+        return None
+
+    def get_demo_positions(self, limit: int = 20) -> list:
+        if not self.client:
+            return []
+        try:
+            res = self.client.table("demo_positions")\
+                .select("*")\
+                .order("opened_at", desc=True)\
+                .limit(limit)\
+                .execute()
+            return res.data or []
+        except Exception as e:
+            logger.warning(f"[Supabase] get_demo_positions error: {e}")
+        return []
+
     # ─── legacy ───────────────────────────────────────────────
     def get_history(self, limit: int = 50) -> List[Dict]:
         return self.get_predictions(limit=limit)

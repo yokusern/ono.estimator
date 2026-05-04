@@ -57,66 +57,56 @@ class TradeMonitor:
             return
 
         try:
-            res = self.db.client.table("active_signals")\
+            # active_signals は廃止 → predictions テーブルを使用
+            res = self.db.client.table("predictions")\
                 .select("*")\
-                .eq("status", "ACTIVE")\
+                .in_("direction", ["BUY", "SELL"])\
+                .eq("is_scored", False)\
+                .order("created_at", desc=True)\
+                .limit(8)\
                 .execute()
-            signals = res.data
+            signals = res.data or []
 
             for sig in signals:
-                sym = sig["symbol"]
+                sym = sig.get("symbol", "")
                 current = price_cache.get(sym, 0)
                 if current <= 0:
                     continue
 
-                new_status = None
+                direction = sig.get("direction", "")
+                entry  = sig.get("entry_price") or sig.get("current_price") or 0
+                tp1    = sig.get("take_profit") or 0
+                tp2    = sig.get("take_profit_2") or 0
+                sl     = sig.get("stop_loss") or 0
+
                 msg = None
 
-                if sig.get("tp2") and current >= sig["tp2"] and sig["direction"] == "BUY":
-                    new_status = "TP2"
-                    msg = f"🎯🎯 TP2 到達！ {sym} — 大成功\nEntry:{sig['entry']:.3f} → Now:{current:.3f}"
-                elif sig.get("tp1") and current >= sig["tp1"] and sig["direction"] == "BUY":
-                    new_status = "TP1"
-                    msg = f"🎯 TP1 到達！ {sym} — 利益確定を推奨\nEntry:{sig['entry']:.3f} → Now:{current:.3f}"
-                elif sig.get("sl") and current <= sig["sl"] and sig["direction"] == "BUY":
-                    new_status = "SL"
-                    msg = f"🛑 SL 到達 — {sym} 損切り\nEntry:{sig['entry']:.3f} → Now:{current:.3f}"
-                elif sig.get("tp2") and current <= sig["tp2"] and sig["direction"] == "SELL":
-                    new_status = "TP2"
-                    msg = f"🎯🎯 TP2 到達！ {sym} — 大成功\nEntry:{sig['entry']:.3f} → Now:{current:.3f}"
-                elif sig.get("tp1") and current <= sig["tp1"] and sig["direction"] == "SELL":
-                    new_status = "TP1"
-                    msg = f"🎯 TP1 到達！ {sym} — 利益確定を推奨"
-                elif sig.get("sl") and current >= sig["sl"] and sig["direction"] == "SELL":
-                    new_status = "SL"
-                    msg = f"🛑 SL 到達 — {sym} 損切り"
+                if direction == "BUY":
+                    if tp2 and current >= tp2:
+                        msg = f"🎯🎯 TP2 到達！ {sym} — 大成功\nEntry:{entry:.3f} → Now:{current:.3f}"
+                    elif tp1 and current >= tp1:
+                        msg = f"🎯 TP1 到達！ {sym} — 利益確定を推奨\nEntry:{entry:.3f} → Now:{current:.3f}"
+                    elif sl and current <= sl:
+                        msg = f"🛑 SL 到達 — {sym} 損切り\nEntry:{entry:.3f} → Now:{current:.3f}"
+                elif direction == "SELL":
+                    if tp2 and current <= tp2:
+                        msg = f"🎯🎯 TP2 到達！ {sym} — 大成功\nEntry:{entry:.3f} → Now:{current:.3f}"
+                    elif tp1 and current <= tp1:
+                        msg = f"🎯 TP1 到達！ {sym} — 利益確定を推奨\nEntry:{entry:.3f} → Now:{current:.3f}"
+                    elif sl and current >= sl:
+                        msg = f"🛑 SL 到達 — {sym} 損切り\nEntry:{entry:.3f} → Now:{current:.3f}"
 
-                # 作成から48時間経過したら期限切れ
-                created = datetime.fromisoformat(sig["created_at"].replace("Z", "+00:00"))
-                if datetime.now().astimezone() - created > timedelta(hours=48):
-                    new_status = "EXPIRED"
-
-                if new_status:
+                if msg and self.notifier:
                     try:
-                        self.db.client.table("active_signals")\
-                            .update({"status": new_status})\
-                            .eq("id", sig["id"])\
-                            .execute()
+                        webhook = self.notifier.default_webhook
+                        if webhook:
+                            requests.post(webhook, json={
+                                "content": msg,
+                                "username": "ONO Estimator — Trade Monitor",
+                            }, timeout=5)
+                        logger.info(f"[TradeMonitor] {sym} → notified: {msg[:40]}")
                     except Exception:
                         pass
-
-                    if msg and self.notifier and new_status != "EXPIRED":
-                        try:
-                            webhook = self.notifier.default_webhook
-                            if webhook:
-                                requests.post(webhook, json={
-                                    "content": msg,
-                                    "username": "ONO Estimator — Trade Monitor",
-                                }, timeout=5)
-                        except Exception:
-                            pass
-
-                    logger.info(f"[TradeMonitor] {sym} → {new_status}")
 
         except Exception as e:
             logger.error(f"[TradeMonitor] check error: {e}")

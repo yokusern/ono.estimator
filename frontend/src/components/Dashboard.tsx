@@ -309,7 +309,7 @@ function NotificationPreview({ symbol, d }: { symbol: string; d: any }) {
 export default function Dashboard() {
   const [activeSymbol, setActiveSymbol] = useState("USDJPY");
   const [activeTF, setActiveTF] = useState("1h");
-  const [activeTab, setActiveTab] = useState<"main"|"multi"|"history"|"ai"|"debug">("main");
+  const [activeTab, setActiveTab] = useState<"main"|"multi"|"history"|"ai"|"demo"|"debug">("main");
   const [margin, setMargin] = useState("1000000");
   const [session, setSession] = useState(getCurrentSession());
   const [showInfo, setShowInfo] = useState(false);
@@ -360,6 +360,11 @@ export default function Dashboard() {
     activeTab === "debug" ? `${API_URL}/api/system/status` : null, fetcher,
     { ...swrOpts, refreshInterval: 15000 }
   );
+  // M-9: デモ売買成績
+  const { data: demoRaw, mutate: mutateDemo } = useSWR(
+    activeTab === "demo" ? `${API_URL}/api/demo/positions` : null, fetcher,
+    { ...swrOpts, refreshInterval: 30000 }
+  );
 
   const isConnected = !error && !isLoading;
   const current = useMemo(() => data?.data?.[activeSymbol] || {}, [data, activeSymbol]);
@@ -378,6 +383,7 @@ export default function Dashboard() {
   const signals = current?.signals || [];
   const warnings = current?.warnings || [];
   const aiText = current?.ai_text || "AI分析待機中...";
+  const awarenessText = current?.awareness_text || "";
   const aligned = current?.aligned ?? 0;
   const confidence = current?.confidence || "LOW";
 
@@ -517,6 +523,7 @@ export default function Dashboard() {
           { id: "multi",   label: "全銘柄",    icon: <Globe size={14} /> },
           { id: "history", label: "パフォーマンス", icon: <Trophy size={14} /> },
           { id: "ai",      label: "AI分析",    icon: <Brain size={14} /> },
+          { id: "demo",    label: "デモ売買",  icon: <Target size={14} /> },
           { id: "debug",   label: "診断",      icon: <Activity size={14} /> },
         ] as const).map(({ id, label, icon }) => (
           <button key={id} onClick={() => setActiveTab(id)} style={{
@@ -963,12 +970,30 @@ export default function Dashboard() {
                       <div>AI分析中...</div>
                     </div>
                   ) : (
-                    <div style={{
-                      fontSize: 14, color: "#cbd5e1", lineHeight: 1.9,
-                      whiteSpace: "pre-wrap", fontFamily: "'Noto Sans JP', sans-serif",
-                    }}>
-                      {aiText || "AI分析待機中..."}
-                    </div>
+                    <>
+                      <div style={{
+                        fontSize: 14, color: "#cbd5e1", lineHeight: 1.9,
+                        whiteSpace: "pre-wrap", fontFamily: "'Noto Sans JP', sans-serif",
+                      }}>
+                        {aiText || "AI分析待機中..."}
+                      </div>
+                      {awarenessText && (
+                        <div style={{
+                          marginTop: 16,
+                          background: "rgba(167,139,250,0.08)",
+                          border: "1px solid rgba(167,139,250,0.25)",
+                          borderRadius: 12,
+                          padding: "14px 16px",
+                        }}>
+                          <div style={{ fontSize: 11, color: "#a78bfa", fontWeight: 700, marginBottom: 8, letterSpacing: 0.5 }}>
+                            📚 今回意識した理論
+                          </div>
+                          <div style={{ fontSize: 13, color: "#c4b5fd", lineHeight: 1.8, whiteSpace: "pre-wrap" }}>
+                            {awarenessText}
+                          </div>
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               </div>
@@ -1014,6 +1039,107 @@ export default function Dashboard() {
                   </div>
                 )}
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* ══════════ TAB: DEMO ══════════ */}
+        {activeTab === "demo" && (
+          <div style={{ maxWidth: 900, margin: "0 auto" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+              <div style={{ fontSize: 18, fontWeight: 700, color: "#22d3ee" }}>
+                🎮 DemoTrader — AI自律売買成績
+              </div>
+              <button onClick={() => mutateDemo()} style={{
+                background: "rgba(34,211,238,0.1)", border: "1px solid rgba(34,211,238,0.3)",
+                borderRadius: 8, padding: "6px 14px", color: "#22d3ee", cursor: "pointer", fontSize: 12,
+              }}>更新</button>
+            </div>
+
+            {/* サマリーカード */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, marginBottom: 20 }}>
+              {[
+                { label: "通算勝率", value: demoRaw?.win_rate != null ? `${demoRaw.win_rate}%` : "---", color: "#34d399" },
+                { label: "オープン中", value: `${demoRaw?.active_count ?? 0}件`, color: "#f59e0b" },
+                { label: "クローズ済み", value: `${demoRaw?.history?.length ?? 0}件`, color: "#94a3b8" },
+              ].map(({ label, value, color }) => (
+                <div key={label} style={{
+                  background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)",
+                  borderRadius: 14, padding: "18px 20px", textAlign: "center",
+                }}>
+                  <div style={{ fontSize: 11, color: "#64748b", marginBottom: 8 }}>{label}</div>
+                  <div style={{ fontSize: 26, fontWeight: 800, color }}>{value}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* オープンポジション */}
+            {(demoRaw?.open?.length ?? 0) > 0 && (
+              <div style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 14, padding: 18, marginBottom: 16 }}>
+                <div style={{ fontSize: 12, color: "#f59e0b", fontWeight: 700, marginBottom: 12 }}>📊 オープンポジション</div>
+                {(demoRaw?.open || []).map((pos: any, i: number) => {
+                  const isBuy = pos.direction === "BUY";
+                  return (
+                    <div key={i} style={{
+                      display: "flex", justifyContent: "space-between", alignItems: "center",
+                      padding: "10px 0", borderBottom: "1px solid rgba(255,255,255,0.04)",
+                    }}>
+                      <div>
+                        <span style={{ fontWeight: 700, color: isBuy ? "#34d399" : "#fb7185", marginRight: 8 }}>
+                          {isBuy ? "▲" : "▼"} {pos.direction}
+                        </span>
+                        <span style={{ color: "#e2e8f0", fontWeight: 600 }}>{pos.symbol}</span>
+                      </div>
+                      <div style={{ fontSize: 12, color: "#94a3b8", fontFamily: "monospace" }}>
+                        Entry: {pos.entry_price?.toFixed?.(3) ?? "---"}
+                        {" | "}TP: {pos.tp_price?.toFixed?.(3) ?? "---"}
+                        {" | "}SL: {pos.sl_price?.toFixed?.(3) ?? "---"}
+                      </div>
+                      <div style={{ fontSize: 11, color: "#64748b" }}>
+                        {pos.opened_at ? new Date(pos.opened_at).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "---"}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* 取引履歴 */}
+            <div style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 14, padding: 18 }}>
+              <div style={{ fontSize: 12, color: "#22d3ee", fontWeight: 700, marginBottom: 12 }}>📋 取引履歴</div>
+              {(demoRaw?.history?.length ?? 0) === 0 ? (
+                <div style={{ color: "#4b5563", fontSize: 13, textAlign: "center", padding: "20px 0" }}>
+                  取引履歴なし — AI判断でshould_enter_demo=trueになると自動エントリーされます
+                </div>
+              ) : (demoRaw?.history || []).map((row: any, i: number) => {
+                const isWin = row.result === "WIN";
+                const isBuy = row.direction === "BUY";
+                return (
+                  <div key={i} style={{
+                    display: "flex", justifyContent: "space-between", alignItems: "center",
+                    padding: "10px 0", borderBottom: "1px solid rgba(255,255,255,0.04)",
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{ fontSize: 16 }}>{isWin ? "✅" : "❌"}</span>
+                      <div>
+                        <span style={{ fontWeight: 700, color: isBuy ? "#34d399" : "#fb7185", marginRight: 6 }}>
+                          {isBuy ? "▲" : "▼"} {row.direction}
+                        </span>
+                        <span style={{ color: "#e2e8f0", fontWeight: 600 }}>{row.symbol}</span>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 12, color: "#94a3b8", fontFamily: "monospace" }}>
+                      {row.entry_price?.toFixed?.(3) ?? "---"} → {row.close_price?.toFixed?.(3) ?? "---"}
+                    </div>
+                    <div style={{ fontWeight: 700, color: isWin ? "#34d399" : "#fb7185", fontFamily: "monospace" }}>
+                      {isWin ? "+" : "-"}{Math.abs(row.pips ?? 0).toFixed(1)} pips
+                    </div>
+                    <div style={{ fontSize: 11, color: "#64748b" }}>
+                      {row.closed_at ? new Date(row.closed_at).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "---"}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
