@@ -152,6 +152,7 @@ fetcher     = HybridDataFetcher()
 engine_v2   = ONOPredictionEngineV2() if _V2 else None
 db          = SupabaseClient()
 ai_analyzer = GeminiAnalyzer()         # H-1: 新API (db引数なし)
+ai_analyzer.set_db(db)                 # 自己学習用DBを注入
 notifier    = Notifier(db=db)
 backtester  = Backtester(db, price_cache) if _HAS_BACKTEST else None
 trade_mon   = TradeMonitor(db, notifier) if _HAS_MONITOR else None
@@ -543,10 +544,13 @@ async def estimation_loop():
                     if not tf_results: continue
 
                     for tf, summary in tf_results.items():
-                        system_state[sym][tf].update(summary)
+                        if tf in TIMEFRAMES:  # _engine_signals キーを除外
+                            system_state[sym][tf].update(summary)
 
                     market_overview["data_summary"][sym] = {
-                        tf: tf_results[tf]["data_bars"] for tf in tf_results
+                        tf: tf_results[tf]["data_bars"]
+                        for tf in tf_results
+                        if tf in TIMEFRAMES and "data_bars" in tf_results[tf]
                     }
 
                     # AI分析 (H-7: engine_signals を渡す)
@@ -618,11 +622,11 @@ async def estimation_loop():
                                 market_overview["global_theme"] = ai_data.get("ai_text","")[:80] + "..."
                                 market_overview["last_update_ts"] = int(time.time())
 
-                            # H-9: スコア閾値 or AI主導通知
+                            # H-9: スコア閾値 or AI主導通知 (H-1: 閾値を45に引き下げ)
                             prob         = ai_data.get("probability", 0)
                             should_notify = ai_data.get("should_notify", False)
                             is_locked    = _check_daily_lock()
-                            score_threshold = abs(score) >= 80 or prob >= 80
+                            score_threshold = abs(score) >= 45 or prob >= 75
                             if not is_locked and (score_threshold or should_notify):
                                 try:
                                     notifier.notify_if_needed(
@@ -692,53 +696,104 @@ async def anti_sleep_loop():
 
 
 async def auto_evaluate_loop():
-    """バックテスト自動評価 + AI自己反省ループ (1時間毎)"""
+    """バックテスト自動評価 + AI自己反省ループ (1時間毎)
+
+    TP/SL到達判定: TP到達→WIN、SL到達→LOSS、どちらも未到達→現在価格で評価
+    """
     await asyncio.sleep(300)
     while True:
         try:
-            # 未採点予測を評価
             unscored = db.get_unscored_predictions()
             evaluated = 0
+            losses_this_run = []
+
             for row in unscored:
                 sym_short = row.get("symbol", "")
                 ticker = next((k for k, v in SYM_SHORT.items() if v == sym_short), sym_short)
                 cur_price = price_cache.get(ticker, 0)
-                if not cur_price: continue
-                entry = row.get("entry_price") or 0
+                if not cur_price:
+                    continue
+
+                entry = row.get("entry_price") or row.get("entry") or 0
                 direction = row.get("direction", "WAIT")
-                if not entry or direction == "WAIT": continue
+                tp1 = row.get("take_profit") or row.get("tp1") or 0
+                sl  = row.get("stop_loss")  or row.get("sl")  or 0
+
+                if not entry or direction == "WAIT":
+                    continue
+
+                # TP/SL到達判定（より正確なWIN/LOSS判定）
+                outcome = "PENDING"
+                is_correct = False
+                pips = 0.0
+
                 if direction == "BUY":
-                    pips = (cur_price - entry) * 10000
-                    outcome = "WIN" if cur_price > entry else "LOSS"
-                else:
-                    pips = (entry - cur_price) * 10000
-                    outcome = "WIN" if cur_price < entry else "LOSS"
-                db.update_prediction_result(row["id"], cur_price, outcome == "WIN", outcome)
+                    if tp1 and cur_price >= tp1:
+                        outcome = "WIN"; is_correct = True; pips = (tp1 - entry) * 10000
+                    elif sl and cur_price <= sl:
+                        outcome = "LOSS"; is_correct = False; pips = (sl - entry) * 10000
+                    else:
+                        pips = (cur_price - entry) * 10000
+                        is_correct = cur_price > entry
+                        outcome = "WIN" if is_correct else "LOSS"
+                elif direction == "SELL":
+                    if tp1 and cur_price <= tp1:
+                        outcome = "WIN"; is_correct = True; pips = (entry - tp1) * 10000
+                    elif sl and cur_price >= sl:
+                        outcome = "LOSS"; is_correct = False; pips = (entry - sl) * 10000
+                    else:
+                        pips = (entry - cur_price) * 10000
+                        is_correct = cur_price < entry
+                        outcome = "WIN" if is_correct else "LOSS"
+
+                if outcome == "PENDING":
+                    continue
+
+                db.update_prediction_result(row["id"], cur_price, is_correct, outcome)
                 db.save_performance(
                     prediction_id=row["id"], symbol=sym_short, direction=direction,
                     entry_price=entry, exit_price=cur_price, outcome=outcome, pips_result=pips,
                 )
                 evaluated += 1
+
+                if not is_correct:
+                    losses_this_run.append({
+                        "symbol": sym_short, "direction": direction,
+                        "entry_price": entry, "exit_price": cur_price, "pips_result": pips,
+                    })
+
             if evaluated > 0:
-                print(f"[AutoEval] {evaluated}件 採点完了")
+                print(f"[AutoEval] {evaluated}件 採点完了 (LOSS: {len(losses_this_run)}件)")
                 perf = db.get_performance_summary()
                 market_overview["history_stats"] = _load_history_stats()
-                # 負けが多い場合はAI反省を生成
+                market_overview["performance"]   = perf
+
+                # 勝率55%未満 or 今回のLOSSが2件以上 → AI自己反省を生成
                 wr = perf.get("win_rate", 0)
-                if wr < 55:
-                    for sym in ["ALL"] + [_short(s) for s in SYMBOLS[:3]]:
-                        try:
-                            losses = [l for l in perf.get("logs", []) if l.get("outcome") == "LOSS"][:5]
-                            if losses:
-                                gen_fn = getattr(ai_analyzer, "generate_self_reflection", None)
-                                lesson = gen_fn(sym, losses) if gen_fn else None
+                if wr < 55 or len(losses_this_run) >= 2:
+                    all_losses = losses_this_run or [
+                        l for l in perf.get("logs", []) if l.get("outcome") == "LOSS"
+                    ][:5]
+                    if all_losses:
+                        for sym_key in ["ALL"] + list({l["symbol"] for l in all_losses}):
+                            try:
+                                sym_losses = (
+                                    all_losses if sym_key == "ALL"
+                                    else [l for l in all_losses if l["symbol"] == sym_key]
+                                )
+                                if not sym_losses:
+                                    continue
+                                lesson = ai_analyzer.generate_self_reflection(sym_key, sym_losses)
                                 if lesson:
-                                    save_fn = getattr(ai_analyzer, "save_ai_lesson", None)
-                                    if save_fn: save_fn(sym, lesson, wr)
-                                    print(f"[AIReflect] {sym}: {lesson[:50]}...")
-                        except Exception: pass
+                                    ai_analyzer.save_ai_lesson(sym_key, lesson, wr)
+                                    print(f"[AIReflect] {sym_key}: {lesson[:60]}...")
+                            except Exception as e:
+                                print(f"[AIReflect] {sym_key}: {e}")
+
         except Exception as e:
             print(f"[AutoEval] Error: {e}")
+            traceback.print_exc()
+
         await asyncio.sleep(3600)  # 1時間毎
 
 

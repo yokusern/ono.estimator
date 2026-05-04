@@ -3,9 +3,13 @@ import json
 import re
 import time
 import traceback
+from datetime import datetime, timezone
+from typing import Optional
+
 import google.generativeai as genai
 
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+
 
 class GeminiAnalyzer:
     def __init__(self):
@@ -19,11 +23,16 @@ class GeminiAnalyzer:
         self.fallback_models = ["gemini-2.0-flash", "gemini-2.5-flash-preview"]
         self.model = None
         self.model_name = GEMINI_MODEL
+        self._db = None  # Supabase client (injected via set_db)
 
         if not self.api_keys:
             print("[Gemini] No API keys found. AI analysis disabled.")
             return
         self._init_model(self.api_keys[0], GEMINI_MODEL)
+
+    def set_db(self, db) -> None:
+        """自己学習用にSupabaseクライアントを注入する"""
+        self._db = db
 
     def _init_model(self, api_key: str, model_name: str):
         try:
@@ -48,6 +57,90 @@ class GeminiAnalyzer:
                     continue
         self.model = None
         return False
+
+    # ── 自己学習 ──────────────────────────────────────────────────
+
+    def _get_ai_memory(self, symbol: str) -> str:
+        """ai_memoryテーブルから過去の教訓を取得してプロンプト用文字列に変換"""
+        if not self._db:
+            return ""
+        try:
+            client = getattr(self._db, "client", None)
+            if not client:
+                return ""
+            res = (
+                client.table("ai_memory")
+                .select("lesson, win_rate_at_time, applied_at")
+                .in_("symbol", [symbol, "ALL"])
+                .eq("is_active", True)
+                .order("applied_at", desc=True)
+                .limit(5)
+                .execute()
+            )
+            rows = res.data or []
+            if not rows:
+                return ""
+            lines = ["【AIメモリ — 過去の教訓】"]
+            for r in rows:
+                wr = r.get("win_rate_at_time", 0)
+                lesson = (r.get("lesson") or "")[:120]
+                lines.append(f"- {lesson}（当時勝率{wr:.1f}%）")
+            return "\n".join(lines)
+        except Exception:
+            return ""
+
+    def generate_self_reflection(self, symbol: str, losses: list) -> Optional[str]:
+        """直近の負けトレードを受け取り、AI自己反省文（日本語100字以内）を生成する"""
+        if not self.model or not losses:
+            return None
+        try:
+            loss_lines = []
+            for loss in losses[:5]:
+                loss_lines.append(
+                    f"  - {loss.get('symbol','?')} {loss.get('direction','?')}"
+                    f" entry={loss.get('entry_price', 0):.5f}"
+                    f" exit={loss.get('exit_price', 0):.5f}"
+                    f" pips={loss.get('pips_result', 0):.1f}"
+                )
+            prompt = (
+                f"You are ONO Estimator AI. Analyze these recent losing trades for {symbol}:\n"
+                + "\n".join(loss_lines)
+                + "\n\n"
+                "Write ONE concise Japanese lesson (max 120 chars) for future entry improvement.\n"
+                "Focus on: what signal conditions to avoid, or what confirmation was missing.\n"
+                "Output the lesson sentence ONLY. No JSON, no markdown, no numbering."
+            )
+            resp = self._call_api(prompt)
+            if resp:
+                lesson = resp.text.strip()[:200]
+                if lesson:
+                    return lesson
+        except Exception as e:
+            print(f"[Gemini] Reflection error for {symbol}: {e}")
+        return None
+
+    def save_ai_lesson(self, symbol: str, lesson: str, win_rate: float) -> bool:
+        """生成した教訓をai_memoryテーブルに保存する"""
+        if not self._db:
+            return False
+        try:
+            client = getattr(self._db, "client", None)
+            if not client:
+                return False
+            client.table("ai_memory").insert({
+                "symbol": symbol,
+                "lesson": lesson,
+                "win_rate_at_time": win_rate,
+                "is_active": True,
+                "applied_at": datetime.now(timezone.utc).isoformat(),
+            }).execute()
+            print(f"[AIMemory] Saved lesson for {symbol}: {lesson[:60]}...")
+            return True
+        except Exception as e:
+            print(f"[AIMemory] Save error: {e}")
+            return False
+
+    # ── 主分析 ────────────────────────────────────────────────────
 
     def analyze_single(
         self,
@@ -81,14 +174,24 @@ class GeminiAnalyzer:
             vol_regime   = es.get("vol_regime", "NORMAL")
             vol_ratio    = float(es.get("vol_ratio", 1.0))
             pa_trigger   = es.get("pa_trigger", "None")
-            iron_pats    = ", ".join(es.get("iron_patterns", [])) or "なし"
+            iron_pats    = ", ".join(str(x) for x in es.get("iron_patterns", [])) or "なし"
             key_levels   = es.get("key_levels", "N/A")
             funda_dir    = es.get("funda_dir", "NEUTRAL")
             funda_reason = es.get("funda_reason", "No data")
             fear_greed   = es.get("fear_greed", "Unknown")
             is_iron      = es.get("is_iron_clad", False)
             session      = es.get("session", "Unknown")
-            fb           = feedback or "学習データ蓄積中。現在の市場データのみで判断すること。"
+
+            # 自己学習コンテキスト: DBメモリ + フィードバック統合
+            ai_memory_text = self._get_ai_memory(symbol)
+            if ai_memory_text and feedback:
+                self_learning = f"{ai_memory_text}\n\n【直近実績】\n{feedback}"
+            elif ai_memory_text:
+                self_learning = ai_memory_text
+            elif feedback:
+                self_learning = f"【直近実績】\n{feedback}"
+            else:
+                self_learning = "学習データ蓄積中。現在の市場データのみで判断すること。"
 
             lines = [
                 "You are ONO Estimator — an elite FX/commodity quantitative analyst.",
@@ -121,8 +224,8 @@ class GeminiAnalyzer:
                 "- Session: Tokyo=0-8UTC London=8-16UTC NY_Overlap=13-16UTC(最高ボラ) NY=16-21UTC",
                 f"- Iron Clad: {is_iron}",
                 "",
-                "[Self-Learning]",
-                fb,
+                "[Self-Learning — 過去の教訓を必ず参照すること]",
+                self_learning,
                 "",
                 "=== ANALYSIS REQUIREMENTS（全て必須・日本語） ===",
                 "",
@@ -140,6 +243,7 @@ class GeminiAnalyzer:
                 "【総合判断】150-250字",
                 "- BB/テクニカル/ファンダの3軸で評価してエントリー可否を断言する",
                 "- AIが今が機会と判断した場合は should_notify=true にすること",
+                "- 過去の教訓に反する条件がある場合はWAITを推奨する",
                 "",
                 "【戦略】",
                 "- Entry/TP/SLは具体的な価格（付近は不可）",
