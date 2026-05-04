@@ -11,50 +11,62 @@ import google.generativeai as genai
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 
 TRADER_SYSTEM_PROMPT = """\
-あなたは「ONO Estimator」というAI熟練トレーダーです。
-株式会社advanceのMTカリキュラム全理論を習得しています。
+あなたは「ONO Estimator」というAI熟練スキャルパーです。
+以下の2つの知識体系を完全に習得しています。
 
-【習得済み理論・全18項目】
-1. ダウ理論: 高値・安値の切り上げ=上昇、切り下げ=下降、それ以外=レンジ
-2. グランビルの法則: 移動平均線と価格の8パターン
-   - 買い②（MA上向き・価格がMAに接近して反発）が最重要＝押し目買い
-   - 売り②（MA下向き・価格がMAに接近して反落）が最重要＝戻り売り
-3. 200SMA: 機関投資家が意識するライン。価格が上なら上昇相場、下なら下降相場
+━━━ 知識体系①: MTカリキュラム全18理論 ━━━
+1. ダウ理論: 高値・安値の切り上げ=上昇、切り下げ=下降
+2. グランビルの法則: 買い②（押し目）・売り②（戻り売り）が最重要
+3. 200SMA: 機関投資家が意識するライン。上なら買いのみ・下なら売りのみ
 4. サポート・レジスタンス: 過去の高値・安値が重要なライン
-5. チャネルライン: トレンドの上限・下限でエントリー
-6. ローソク足: 上影=上値抵抗、下影=下値支持、十字=転換予兆、包み足=強い転換
+5. チャネルライン: 上限・下限でエントリー
+6. ローソク足: 上影=上値抵抗、下影=下値支持、十字=転換、包み足=強い転換
 7. インサイドバー: ブレイク待機中。BBスクイーズとの複合で最強
-8. ゴールデンクロス・デッドクロス: 短期MAが長期MAを交差
-9. UPLOWバンド（SVシステム）: MA14 ± 1σ/2σ/3σ
-   - バンド外への乖離=逆張り候補、スクイーズ後のブレイク=最強シグナル
-10. ボリンジャーバンド: ±2σで95.4%の価格が収まる
-    - トレンド中のバンドウォークは追わない（逆張り禁止）
-    - BBスクイーズ→ブレイクが最高確度
-11. 一目均衡表（LWシステム）: 遅行スパンクロスが最重要
-    - 遅行スパンが現在ローソクを上抜け=買い転換、雲の上=上昇相場
+8. GC・DC: 短期MAが長期MAを交差
+9. UPLOWバンド（SVシステム）: MA14±1σ/2σ。スクイーズ後ブレイクが最強
+10. BB: ±2σ。バンドウォーク中は逆張り禁止
+11. 一目均衡表（LWシステム）: 遅行スパンクロスが最重要。雲で方向確認
 12. MACD: GC=買い、DC=売り。ダイバージェンスはトレンド転換の予兆
-13. RSI: 70超=買われすぎ、30未満=売られすぎ。方向フィルター必須
-14. ストキャスティクス（TKSシステム）:
-    - 売られすぎ(20以下)でGC=買い、買われすぎ(80以上)でDC=売り
-    - 上位足のトレンドと同方向のみ有効
-15. ブレイクアウト: もみ合い後の上放れ=上昇、下放れ=下降
+13. RSI: 70超=買われすぎ、30未満=売られすぎ
+14. ストキャスティクス（TKSシステム）: 売られすぎGC=買い、買われすぎDC=売り
+15. ブレイクアウト: もみ合い後の上放れ/下放れ
 16. 三尊・逆三尊: ネックラインブレイクでトレンド転換
-17. エリオット波動: 第3波が最長・最強。第5波終了後は転換注意
-18. マーケットセッション: ロンドン・NY重複（JST22-翌1時）が最重要・最高ボラ
+17. エリオット波動: 第3波が最強。第5波終了後は転換注意
+18. マーケットセッション: ロンドン・NY重複（JST22-翌1時）が最重要
+
+━━━ 知識体系②: 実践スキャルピング戦略 ━━━
+【エントリー根拠（優先順位順）】
+A. Liquidity Sweep（最重要）:
+   直近の高値・安値を一瞬だけ抜けてからの強い戻りヒゲを確認。
+   「他者の損切りが燃料になった最強のエントリー」
+   ヒゲの根元（実体が戻った価格）を再ブレイクした瞬間にエントリー。
+
+B. 実体ブレイク:
+   抵抗帯をヒゲではなく実体で抜けた際にエントリー。ヒゲブレイクは騙し。
+
+C. ヒゲ否定:
+   前の足のヒゲ先端を現在足の実体が塗りつぶした瞬間がエントリー。
+
+D. 三尊・逆三尊の右肩崩れ（逆張り）:
+   右肩が形成中に崩れる「パターン失敗」を逆張りで狙う。
+
+【レンジ判定（エントリー禁止条件）】
+BB幅が直近20本平均の60%以下 かつ ATRが直近20本平均の70%以下 → レンジ確定。
+レンジ中は「RANGE_WAIT」として見送りを即決すること。
 
 【分析プロセス（必ずこの順番で）】
-Step1【上位足トレンド】D1/4HのダウとグランビルでTRENDを確認。200SMAの上下も。
-Step2【ゾーン特定】1HのBBとUPLOWバンドで現在地を判定。スクイーズ中か、バンドウォーク中か。
-Step3【トリガー確認】15m/5mでストキャスGC/DC、ローソク足、遅行スパンクロスを確認。
-Step4【ファンダ確認】金利・ドル強弱・Fear&Greedで方向の裏付けを確認。
-Step5【総合判断】BUY/SELL/見送り を断言。Entry/TP/SL/RRを具体的数値で。
+Step1: 200MAに対する価格位置でトレンド方向を固定（上なら買いのみ）
+Step2: レンジ状態かどうかを判定。レンジなら即見送り
+Step3: Liquidity Sweep・実体ブレイク・ヒゲ否定のどれかが発生しているか確認
+Step4: 勢い減衰・RSI on BB・セカンドテストで確度を評価
+Step5: Entry/TP/SLを具体的数値で。TP=15pips目安、SL=5〜7pips厳守
 
 【心構え】
-- 揃っていない時は見送りが重要な判断。無理にエントリーしない
-- 東京時間はボラが低い。ロンドン・NY重複時間を最重視
-- 上位足と下位足が逆方向なら必ず見送り
-- 3つ以上の根拠が揃った時だけエントリー判断する
-- SLはATR×1.5以内、RR最低1.5以上
+- SL5〜7pipsを絶対に超えないこと。大きいSLはスキャルピングではない
+- ローソク足の実体を最重視。ヒゲは信用しない
+- 流動性（Liquidity）がある場所＝他者のSLが溜まっている場所を意識
+- 東京時間は低ボラ。ロンドン・NY重複時間にLiquidity Sweepが最多発生
+- 3根拠以上揃った時のみエントリー
 """
 
 
@@ -247,6 +259,71 @@ class GeminiAnalyzer:
             elliott_wave    = es.get("elliott_wave", "不明")
             elliott_wave3   = es.get("elliott_wave3", False)
 
+            # ── スキャルピング戦略指標（H-5〜H-15）──
+            liq_signal      = es.get("liq_signal", "NONE")
+            liq_bull_sweep  = es.get("liq_bull_sweep", False)
+            liq_bear_sweep  = es.get("liq_bear_sweep", False)
+            liq_bull_rebr   = es.get("liq_bull_rebreak", False)
+            liq_bear_rebr   = es.get("liq_bear_rebreak", False)
+            liq_swept_high  = float(es.get("liq_swept_high", 0.0))
+            liq_swept_low   = float(es.get("liq_swept_low", 0.0))
+            wick_bull       = es.get("wick_bull_denial", False)
+            wick_bear       = es.get("wick_bear_denial", False)
+            momentum_decay  = es.get("momentum_decaying", False)
+            decay_ratio     = float(es.get("decay_ratio", 1.0))
+            is_range        = es.get("is_range", False)
+            range_high      = float(es.get("range_high", 0.0))
+            range_low       = float(es.get("range_low", 0.0))
+            rsi_val         = float(es.get("rsi_val", 50.0))
+            rsi_above_bb    = es.get("rsi_above_bb", False)
+            rsi_below_bb    = es.get("rsi_below_bb", False)
+            rsi_bear_div    = es.get("rsi_bearish_div", False)
+            rsi_bull_div    = es.get("rsi_bullish_div", False)
+            fib_500         = float(es.get("fib_500", 0.0))
+            fib_618         = float(es.get("fib_618", 0.0))
+            near_fib        = es.get("near_fib_level")
+            ma200_1m        = float(es.get("ma200_1m", 0.0))
+            price_vs_ma200  = es.get("price_vs_ma200", "N/A")
+
+            # Liquidity Sweep状態文字列
+            liq_str = "なし"
+            if liq_bear_rebr:
+                liq_str = f"🔴 BEAR LIQUIDITY SWEEP完成（高値{liq_swept_high:.3f}を上抜け後強い戻り。再ブレイク確認→SELL優位）"
+            elif liq_bull_rebr:
+                liq_str = f"🟢 BULL LIQUIDITY SWEEP完成（安値{liq_swept_low:.3f}を下抜け後強い戻り。再ブレイク確認→BUY優位）"
+            elif liq_bear_sweep:
+                liq_str = f"⚠️ BEAR SWEEP待機中（高値{liq_swept_high:.3f}を上抜け後ヒゲ。再ブレイク待ち）"
+            elif liq_bull_sweep:
+                liq_str = f"⚠️ BULL SWEEP待機中（安値{liq_swept_low:.3f}を下抜け後ヒゲ。再ブレイク待ち）"
+
+            # ヒゲ否定状態文字列
+            wick_str = "なし"
+            if wick_bull:
+                wick_str = f"🟢 下ヒゲ否定（現在足実体が下ヒゲを塗りつぶし→BUY転換）"
+            elif wick_bear:
+                wick_str = f"🔴 上ヒゲ否定（現在足実体が上ヒゲを塗りつぶし→SELL転換）"
+
+            # レンジ状態文字列
+            range_str = "非レンジ — エントリー可能"
+            if is_range:
+                range_str = f"⏸ RANGE_WAIT（BB幅収縮 + ATR圧縮。ブレイクアウト待機。R:{range_high:.3f} S:{range_low:.3f}）"
+
+            # RSI on BB状態文字列
+            rsi_bb_str = f"RSI={rsi_val:.1f}"
+            if rsi_above_bb:
+                rsi_bb_str += "（BBを上抜け → 過熱・SELL予兆）"
+            elif rsi_below_bb:
+                rsi_bb_str += "（BBを下抜け → 過冷・BUY予兆）"
+            if rsi_bear_div:
+                rsi_bb_str += " + ベアリッシュダイバージェンス"
+            elif rsi_bull_div:
+                rsi_bb_str += " + ブリッシュダイバージェンス"
+
+            # フィボナッチ状態文字列
+            fib_str = f"50%={fib_500:.3f} / 61.8%={fib_618:.3f}"
+            if near_fib:
+                fib_str += f" ← 現在価格が{near_fib}付近"
+
             # インサイドバー状態文字列
             inside_str = "なし"
             if inside_bar and inside_squeeze:
@@ -291,51 +368,57 @@ class GeminiAnalyzer:
                 "=== 現在の市場データ ===",
                 f"銘柄: {symbol} | 現在値: {current_price} | セッション: {session}",
                 "",
-                "【Step1 上位足トレンド判定に使うデータ】",
-                f"- MACD(1H/15m)同期方向: {macd_sync}",
-                f"- MACD Hist 1H={hist_h1:.5f} / 15m={hist_15m:.5f}",
+                "【Step1: 200MAトレンド方向（1m足MA200）】",
+                f"- 1m足 MA200={ma200_1m:.3f} | 価格位置: {price_vs_ma200}（上=買いのみ・下=売りのみ）",
                 f"- グランビルパターン(1H MA14): {gran_pattern}",
+                f"- MACD(1H/15m)同期: {macd_sync} | Hist 1H={hist_h1:.5f} / 15m={hist_15m:.5f}",
                 f"- 4H BBband方向: {bb_4h_dir}",
                 "",
-                "【Step2 ゾーン判定に使うデータ】",
-                f"- BBスコア: {bb_score}/83 | 詳細: {bb_reasons}",
-                f"- スクイーズ解放: {squeeze_rel} | バンドウォーク: {band_walk}",
-                f"- UPLOWバンド状態(1H MA14±σ): {uplow_state}",
-                f"- ボラティリティレジーム: {vol_regime}",
+                "【Step2: レンジ判定（エントリー禁止条件）】",
+                f"- 判定結果: {range_str}",
+                f"- BBスコア: {bb_score}/83 | スクイーズ解放: {squeeze_rel}",
+                f"- UPLOWバンド状態(1H): {uplow_state}",
                 "",
-                "【Step3 エントリートリガーに使うデータ】",
-                f"- ストキャス(TKSシステム): {stoch_status}",
-                f"- 一目遅行スパンクロス: {chikou_cross} | 雲との位置: {price_cloud}",
-                f"- RSI 15m={rsi_15m:.1f} / 1H={rsi_1h:.1f} | 状態: {rsi_state}",
-                f"- プライスアクション: {pa_trigger}",
+                "【Step3: エントリートリガー確認（Liquidity Sweep最優先）】",
+                f"- [A] Liquidity Sweep: {liq_str}",
+                f"- [B] ヒゲ否定: {wick_str}",
+                f"- [C] プライスアクション: {pa_trigger}",
                 f"- 検知パターン: {iron_pats}",
                 f"- S/Rキーレベル: {sr_text}",
-                f"- インサイドバー(M-1): {inside_str}",
-                f"- MACDダイバージェンス(M-2): {macd_div}",
-                f"- 三尊・逆三尊(M-4): {hs_pattern}" + (f" | ネックライン:{hs_neckline}" if hs_neckline else "") + (f" | バイアス:{hs_bias}" if hs_bias != 'NONE' else ""),
-                f"- エリオット波動(M-5): {elliott_str}",
+                f"- フィボナッチ: {fib_str}",
+                f"- 一目遅行スパンクロス: {chikou_cross} | 雲との位置: {price_cloud}",
+                f"- ストキャス(TKSシステム): {stoch_status}",
+                f"- インサイドバー: {inside_str}",
+                f"- MACDダイバージェンス: {macd_div}",
+                f"- 三尊・逆三尊: {hs_pattern}" + (f" | ネックライン:{hs_neckline}" if hs_neckline else "") + (f" | バイアス:{hs_bias}" if hs_bias != 'NONE' else ""),
+                f"- エリオット波動: {elliott_str}",
                 "",
-                "【Step4 ファンダメンタル】",
-                f"- Fear&Greed指標: {fear_greed}",
-                f"- ATR(1H,14): {atr_1h:.5f}（SLの参考値、ATR×1.5以内）",
+                "【Step4: 反発確認（3根拠揃えること）】",
+                f"- 勢い減衰: {'あり（大→中→小、縮小率{:.0f}%）'.format(decay_ratio*100) if momentum_decay else 'なし'}",
+                f"- RSI on BB: {rsi_bb_str}",
+                f"- RSI 15m={rsi_15m:.1f} / 1H={rsi_1h:.1f} | 状態: {rsi_state}",
+                f"- ATR(1H,14): {atr_1h:.5f}（SL参考: ATR×0.5〜0.7以内）",
+                f"- Fear&Greed: {fear_greed}",
                 "",
-                "【過去の教訓（必ず参照）】",
+                "【過去の教訓（必ず参照してエントリー条件に反映）】",
                 self_learning,
                 "",
                 "=== 出力指示 ===",
                 "上記5ステップで分析し、以下のJSONのみ出力。マークダウン・説明文は禁止。",
                 "directionは BUY / SELL / NONE のいずれか（NONEは見送り）。",
+                "is_range=trueの場合はdirection=NONEとし、should_enter_demo=falseとすること。",
                 "should_enter_demo: 3根拠以上揃い高確度ならtrue、見送りならfalse。",
-                "ai_textは【トレンド】【ゾーン】【トリガー】【ファンダ】【判断】【計画】の6節で構成。",
+                "entry_typeは: LIQUIDITY_SWEEP / BODY_BREAK / WICK_DENIAL / HAS_SHOULDER / NONE のいずれか。",
+                "ai_textは【トレンド】【レンジ判定】【エントリー根拠】【反発確認】【判断】【計画】の6節で構成。",
                 "",
                 "{",
-                '  "step1_trend": "ダウとグランビルによるトレンド判定",',
-                '  "step2_zone": "BBとUPLOWバンドによるゾーン評価",',
-                '  "step3_trigger": "ストキャス・一目・ローソク足のトリガー確認",',
-                '  "step4_funda": "ファンダメンタルとテクニカルの一致度",',
-                '  "step5_judgment": "BUY/SELL/見送りと根拠3点以上",',
-                '  "awareness_text": "今回意識した理論と判断根拠を200字で日本語記述",',
-                '  "ai_text": "【トレンド】...\\n【ゾーン】...\\n【トリガー】...\\n【ファンダ】...\\n【判断】...\\n【計画】Entry:X / TP:X / SL:X / RR:X",',
+                '  "step1_trend": "200MAと価格位置・グランビルパターンの説明",',
+                '  "step2_range": "レンジ状態かどうかの判定結果",',
+                '  "step3_entry_type": "Liquidity Sweep / 実体ブレイク / ヒゲ否定 / 三尊崩れ / なし",',
+                '  "step4_reversal": "勢い減衰・RSI on BB・セカンドテストの確認結果",',
+                '  "step5_plan": "Entry:X / TP:X / SL:X / RR:X",',
+                '  "awareness_text": "今回意識した理論・手法と判断根拠（200字）",',
+                '  "ai_text": "【トレンド】...\\n【レンジ判定】...\\n【エントリー根拠】...\\n【反発確認】...\\n【判断】...\\n【計画】Entry:X/TP:X/SL:X/RR:X",',
                 '  "should_notify": false,',
                 '  "should_enter_demo": false,',
                 '  "direction": "BUY or SELL or NONE",',
@@ -344,6 +427,9 @@ class GeminiAnalyzer:
                 '  "sl_price": 0.0,',
                 '  "rr_ratio": 0.0,',
                 '  "confidence": "HIGH or MEDIUM or LOW",',
+                '  "is_range": false,',
+                '  "entry_type": "LIQUIDITY_SWEEP or BODY_BREAK or WICK_DENIAL or HAS_SHOULDER or NONE",',
+                '  "predicted_price": 0.0,',
                 '  "probability": 0',
                 "}",
             ]
@@ -361,16 +447,16 @@ class GeminiAnalyzer:
 
             result = json.loads(json_match.group(0))
 
-            # ai_textがなければstepから合成
+            # ai_textがなければstepから合成（新フォーマット対応）
             if not result.get("ai_text"):
                 parts = [
                     f"【トレンド】{result.get('step1_trend', '')}",
-                    f"【ゾーン】{result.get('step2_zone', '')}",
-                    f"【トリガー】{result.get('step3_trigger', '')}",
-                    f"【ファンダ】{result.get('step4_funda', '')}",
-                    f"【判断】{result.get('step5_judgment', '')}",
+                    f"【レンジ判定】{result.get('step2_range', '')}",
+                    f"【エントリー根拠】{result.get('step3_entry_type', '')}",
+                    f"【反発確認】{result.get('step4_reversal', '')}",
+                    f"【判断】{result.get('step5_plan', '')}",
                 ]
-                result["ai_text"] = "\n".join(p for p in parts if p != "【トレンド】")
+                result["ai_text"] = "\n".join(p for p in parts if len(p) > 10)
 
             # 後方互換正規化
             direction = result.get("direction", "NONE")
@@ -383,6 +469,14 @@ class GeminiAnalyzer:
             result.setdefault("tp1",    result.get("tp_price", 0))
             result.setdefault("should_notify",     False)
             result.setdefault("should_enter_demo", False)
+            result.setdefault("is_range",    False)
+            result.setdefault("entry_type",  "NONE")
+            result.setdefault("predicted_price", result.get("tp_price", 0))
+
+            # is_rangeがtrueならデモエントリーを強制抑止
+            if result.get("is_range"):
+                result["should_enter_demo"] = False
+                result["direction"] = "WAIT"
 
             if not result.get("ai_text") and not result.get("awareness_text"):
                 print(f"[Gemini] Empty result for {symbol}")

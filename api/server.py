@@ -157,10 +157,10 @@ notifier    = Notifier(db=db)
 backtester  = Backtester(db, price_cache) if _HAS_BACKTEST else None
 trade_mon   = TradeMonitor(db, notifier) if _HAS_MONITOR else None
 
-# H-11: DemoTrader
+# H-11: DemoTrader（ai_analyzerを注入して自己学習ループを完成）
 try:
     from ono_estimator.core.demo_trader import DemoTrader
-    demo_trader = DemoTrader(db)
+    demo_trader = DemoTrader(db, ai_analyzer=ai_analyzer)
     print("[Server] DemoTrader loaded ✅")
 except Exception as _e:
     demo_trader = None
@@ -334,7 +334,7 @@ _df_cache: dict = {sym: {} for sym in SYMBOLS}
 
 
 def _build_engine_signals(sym: str, tf_results: dict, df_store: dict) -> dict:
-    """H-9: 全テクニカル指標（グランビル・ストキャス・一目・UPLOW含む）を統合"""
+    """H-17: 全テクニカル指標（スキャルピング戦略含む全指標）を統合"""
     from ono_estimator.filters.momentum import MomentumFilter
     from ono_estimator.indicators.technical import TechnicalIndicators
 
@@ -342,7 +342,7 @@ def _build_engine_signals(sym: str, tf_results: dict, df_store: dict) -> dict:
     price  = ref.get("price", 0)
     layers = ref.get("layers", {})
 
-    # ── BBスコア（H-8）──
+    # ── BBスコア ──
     bb_result = {}
     if "15m" in df_store and "1h" in df_store:
         try:
@@ -363,7 +363,7 @@ def _build_engine_signals(sym: str, tf_results: dict, df_store: dict) -> dict:
             vol_result = vr
         except Exception: pass
 
-    # ── グランビルパターン（H-4）──
+    # ── グランビルパターン（H-4）1H ──
     granville_pattern = "なし"
     if df1h is not None and len(df1h) >= 4:
         try:
@@ -371,7 +371,7 @@ def _build_engine_signals(sym: str, tf_results: dict, df_store: dict) -> dict:
             granville_pattern = TechnicalIndicators.detect_granville(df1h["close"], ma14)
         except Exception: pass
 
-    # ── ストキャスティクス（H-5: TKSシステム）1H ──
+    # ── ストキャスティクス 1H ──
     stoch_result = {"k": 50.0, "d": 50.0, "golden_cross": False, "dead_cross": False,
                     "oversold": False, "overbought": False}
     if df1h is not None and len(df1h) >= 20 and all(c in df1h.columns for c in ["high", "low", "close"]):
@@ -379,7 +379,7 @@ def _build_engine_signals(sym: str, tf_results: dict, df_store: dict) -> dict:
             stoch_result = TechnicalIndicators.stochastic(df1h["high"], df1h["low"], df1h["close"])
         except Exception: pass
 
-    # ── 一目均衡表（H-6: LWシステム）1H ──
+    # ── 一目均衡表 1H ──
     ichimoku_result = {"chikou_cross": "NONE", "price_vs_cloud": "N/A",
                        "cloud_top": 0.0, "cloud_bot": 0.0, "tenkan": 0.0, "kijun": 0.0}
     if df1h is not None and len(df1h) >= 60 and all(c in df1h.columns for c in ["high", "low", "close"]):
@@ -387,11 +387,19 @@ def _build_engine_signals(sym: str, tf_results: dict, df_store: dict) -> dict:
             ichimoku_result = TechnicalIndicators.ichimoku(df1h["high"], df1h["low"], df1h["close"])
         except Exception: pass
 
-    # ── UPLOWバンド（H-7: SVシステム）1H ──
+    # ── UPLOWバンド 1H ──
     uplow_result = {"state": "INSIDE", "ma": 0.0}
     if df1h is not None and len(df1h) >= 14:
         try:
             uplow_result = TechnicalIndicators.uplow_bands(df1h["close"])
+        except Exception: pass
+
+    # ── フィボナッチ（H-15）1H ──
+    fib_result = {"fib_500": 0.0, "fib_618": 0.0, "near_fib_level": None,
+                  "swing_high": 0.0, "swing_low": 0.0}
+    if df1h is not None and len(df1h) >= 5:
+        try:
+            fib_result = TechnicalIndicators.fibonacci_levels(df1h)
         except Exception: pass
 
     # ── S/Rキーレベル ──
@@ -399,6 +407,62 @@ def _build_engine_signals(sym: str, tf_results: dict, df_store: dict) -> dict:
     if df1h is not None:
         try:
             key_levels = TechnicalIndicators.find_key_levels(df1h)
+        except Exception: pass
+
+    # ── スキャルピング戦略指標（H-5〜H-11）: 1m足で算出 ──
+    df1m = df_store.get("1m")
+
+    # H-5: Liquidity Sweep（最重要）
+    liq_result = {"bull_sweep": False, "bear_sweep": False, "bull_rebreak": False,
+                  "bear_rebreak": False, "swept_high": 0.0, "swept_low": 0.0, "signal": "NONE"}
+    if df1m is not None and len(df1m) >= 22:
+        try:
+            liq_result = TechnicalIndicators.detect_liquidity_sweep(df1m)
+        except Exception: pass
+
+    # H-7: ヒゲ否定
+    wick_result = {"bull_denial": False, "bear_denial": False,
+                   "denied_wick_high": 0.0, "denied_wick_low": 0.0}
+    if df1m is not None and len(df1m) >= 2:
+        try:
+            wick_result = TechnicalIndicators.detect_wick_denial(df1m)
+        except Exception: pass
+
+    # H-8: 勢い減衰
+    decay_result = {"is_decaying": False, "decay_ratio": 1.0, "signal": "NONE"}
+    if df1m is not None and len(df1m) >= 5:
+        try:
+            decay_result = TechnicalIndicators.detect_momentum_decay(df1m)
+        except Exception: pass
+
+    # H-10: レンジ状態
+    range_result = {"is_range": False, "bb_squeezed": False, "atr_compressed": False,
+                    "bb_width_ratio": 1.0, "atr_ratio": 1.0,
+                    "range_high": 0.0, "range_low": 0.0,
+                    "breakout_up": False, "breakout_down": False}
+    if df1m is not None and len(df1m) >= 21:
+        try:
+            range_result = TechnicalIndicators.detect_range_state(df1m)
+        except Exception: pass
+
+    # H-11: RSI on BB
+    rsi_bb_result = {"rsi": 50.0, "rsi_bb_upper": 70.0, "rsi_bb_lower": 30.0,
+                     "rsi_bb_mid": 50.0, "above_bb": False, "below_bb": False,
+                     "bearish_divergence": False, "bullish_divergence": False}
+    if df1m is not None and len(df1m) >= 34:
+        try:
+            rsi_bb_result = TechnicalIndicators.rsi_with_bb(df1m["close"])
+        except Exception: pass
+
+    # MA200 on 1m
+    ma200_1m = 0.0
+    price_vs_ma200 = "N/A"
+    if df1m is not None and len(df1m) >= 200:
+        try:
+            ma200_s = df1m["close"].rolling(200).mean()
+            ma200_1m = float(ma200_s.iloc[-1])
+            cur_1m = float(df1m["close"].iloc[-1])
+            price_vs_ma200 = "ABOVE" if cur_1m > ma200_1m else "BELOW"
         except Exception: pass
 
     # ── RSIダイバージェンス（M-3）──
@@ -462,13 +526,27 @@ def _build_engine_signals(sym: str, tf_results: dict, df_store: dict) -> dict:
         iron_patterns.append(label)
     if head_shoulders.get("pattern") != "なし":
         iron_patterns.append(head_shoulders["pattern"])
+    # スキャルピングシグナルをiron_patternsに追加
+    liq_sig = liq_result.get("signal", "NONE")
+    if liq_sig not in ("NONE", ""):
+        iron_patterns.append(f"LiquiditySweep:{liq_sig}")
+    if wick_result.get("bull_denial"):
+        iron_patterns.append("WickDenial:BULL")
+    elif wick_result.get("bear_denial"):
+        iron_patterns.append("WickDenial:BEAR")
+    if decay_result.get("signal") == "MOMENTUM_DECAY":
+        iron_patterns.append("MomentumDecay")
+    if range_result.get("is_range"):
+        iron_patterns.append("RANGE_WAIT")
+    if fib_result.get("near_fib_level"):
+        iron_patterns.append(f"Fib:{fib_result['near_fib_level']}")
 
     session_str = get_active_session(datetime.utcnow().hour)
 
     return {
         "current_price":    price,
         "session":          session_str,
-        # BB (H-8)
+        # BB
         "bb_score":         bb_result.get("bb_score", 0),
         "bb_reasons":       bb_result.get("bb_reasons", []),
         "bb_4h_dir":        bb_result.get("bb_4h_dir", "FLAT"),
@@ -480,19 +558,19 @@ def _build_engine_signals(sym: str, tf_results: dict, df_store: dict) -> dict:
         "vol_ratio":        vol_result.get("ratio", 1.0),
         # グランビル (H-4)
         "granville_pattern": granville_pattern,
-        # ストキャス (H-5)
+        # ストキャス
         "stoch_k":           stoch_result.get("k", 50.0),
         "stoch_d":           stoch_result.get("d", 50.0),
         "stoch_gc":          stoch_result.get("golden_cross", False),
         "stoch_dc":          stoch_result.get("dead_cross", False),
         "stoch_oversold":    stoch_result.get("oversold", False),
         "stoch_overbought":  stoch_result.get("overbought", False),
-        # 一目 (H-6)
+        # 一目
         "chikou_cross":      ichimoku_result.get("chikou_cross", "NONE"),
         "price_vs_cloud":    ichimoku_result.get("price_vs_cloud", "N/A"),
         "cloud_top":         ichimoku_result.get("cloud_top", 0.0),
         "cloud_bot":         ichimoku_result.get("cloud_bot", 0.0),
-        # UPLOW (H-7)
+        # UPLOW
         "uplow_state":       uplow_result.get("state", "INSIDE"),
         "uplow_ma":          uplow_result.get("ma", 0.0),
         # Momentum (MACD/RSI)
@@ -522,6 +600,43 @@ def _build_engine_signals(sym: str, tf_results: dict, df_store: dict) -> dict:
         # M-5: エリオット波動
         "elliott_wave":      elliott.get("wave_label", "不明"),
         "elliott_wave3":     elliott.get("wave3_detected", False),
+        # H-5: Liquidity Sweep（最重要スキャルピングシグナル）
+        "liq_signal":        liq_result.get("signal", "NONE"),
+        "liq_bull_sweep":    liq_result.get("bull_sweep", False),
+        "liq_bear_sweep":    liq_result.get("bear_sweep", False),
+        "liq_bull_rebreak":  liq_result.get("bull_rebreak", False),
+        "liq_bear_rebreak":  liq_result.get("bear_rebreak", False),
+        "liq_swept_high":    liq_result.get("swept_high", 0.0),
+        "liq_swept_low":     liq_result.get("swept_low", 0.0),
+        # H-7: ヒゲ否定
+        "wick_bull_denial":  wick_result.get("bull_denial", False),
+        "wick_bear_denial":  wick_result.get("bear_denial", False),
+        "wick_denied_high":  wick_result.get("denied_wick_high", 0.0),
+        "wick_denied_low":   wick_result.get("denied_wick_low", 0.0),
+        # H-8: 勢い減衰
+        "momentum_decaying": decay_result.get("is_decaying", False),
+        "decay_ratio":       decay_result.get("decay_ratio", 1.0),
+        "decay_signal":      decay_result.get("signal", "NONE"),
+        # H-10: レンジ状態
+        "is_range":          range_result.get("is_range", False),
+        "range_high":        range_result.get("range_high", 0.0),
+        "range_low":         range_result.get("range_low", 0.0),
+        "bb_width_ratio":    range_result.get("bb_width_ratio", 1.0),
+        # H-11: RSI on BB
+        "rsi_val":           rsi_bb_result.get("rsi", 50.0),
+        "rsi_above_bb":      rsi_bb_result.get("above_bb", False),
+        "rsi_below_bb":      rsi_bb_result.get("below_bb", False),
+        "rsi_bearish_div":   rsi_bb_result.get("bearish_divergence", False),
+        "rsi_bullish_div":   rsi_bb_result.get("bullish_divergence", False),
+        # H-15: フィボナッチ
+        "fib_500":           fib_result.get("fib_500", 0.0),
+        "fib_618":           fib_result.get("fib_618", 0.0),
+        "near_fib_level":    fib_result.get("near_fib_level"),
+        "fib_swing_high":    fib_result.get("swing_high", 0.0),
+        "fib_swing_low":     fib_result.get("swing_low", 0.0),
+        # MA200 on 1m
+        "ma200_1m":          ma200_1m,
+        "price_vs_ma200":    price_vs_ma200,
     }
 
 

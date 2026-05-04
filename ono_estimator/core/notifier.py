@@ -175,9 +175,9 @@ class Notifier:
         except Exception as e:
             logger.error(f"[Discord] Error: {e}")
 
-    # ─── H-12: AI熟練トレーダー通知 ────────────────────────────
+    # ─── H-20: AI熟練スキャルパー通知（スキャルピング特化フォーマット）──
     def notify_ai_judgment(self, symbol: str, ai_data: dict) -> None:
-        """AI分析結果を熟練トレーダー通知フォーマットで送信する"""
+        """スキャルピング戦略特化の通知フォーマットで送信する"""
         webhook = self.default_webhook
         if not webhook:
             return
@@ -193,40 +193,64 @@ class Notifier:
             return
         self._last_signal_key[symbol] = sig_key
 
-        dir_icon = "🟢🟢" if direction == "BUY" else "🔴🔴" if direction == "SELL" else "⚪"
-        conf = ai_data.get("confidence", ai_data.get("signal_quality", "LOW"))
-
-        entry  = ai_data.get("entry_price") or ai_data.get("entry", "---")
-        tp     = ai_data.get("tp_price")    or ai_data.get("tp1", "---")
-        sl     = ai_data.get("sl_price")    or ai_data.get("sl", "---")
-        rr     = ai_data.get("rr_ratio", "---")
-        prob   = ai_data.get("probability", 0)
-        ai_text     = ai_data.get("ai_text", "")
-        awareness   = ai_data.get("awareness_text", "")
-        enter_demo  = ai_data.get("should_enter_demo", False)
+        dir_icon   = "🟢🟢" if direction == "BUY" else "🔴🔴" if direction == "SELL" else "⚪"
+        conf       = ai_data.get("confidence", ai_data.get("signal_quality", "LOW"))
+        entry      = ai_data.get("entry_price") or ai_data.get("entry", 0)
+        tp         = ai_data.get("tp_price")    or ai_data.get("tp1", 0)
+        sl         = ai_data.get("sl_price")    or ai_data.get("sl", 0)
+        rr         = ai_data.get("rr_ratio", 0)
+        prob       = ai_data.get("probability", 0)
+        ai_text    = ai_data.get("ai_text", "")
+        awareness  = ai_data.get("awareness_text", "")
+        is_range   = ai_data.get("is_range", False)
+        entry_type = ai_data.get("entry_type", "NONE")
+        enter_demo = ai_data.get("should_enter_demo", False)
 
         def fmt(v, digits=3):
-            return f"{v:.{digits}f}" if isinstance(v, float) else str(v)
+            return f"{v:.{digits}f}" if isinstance(v, (int, float)) and v else str(v) if v else "---"
 
-        rr_str = fmt(rr, 2) if isinstance(rr, float) else str(rr)
+        rr_str = f"{rr:.2f}" if isinstance(rr, (int, float)) and rr else "---"
         sep = "━" * 17
+
+        # エントリー根拠バッジ
+        entry_badge = {
+            "LIQUIDITY_SWEEP": "💦 Liquidity Sweep（最重要）",
+            "BODY_BREAK":      "🔷 実体ブレイク",
+            "WICK_DENIAL":     "⚡ ヒゲ否定",
+            "HAS_SHOULDER":    "📐 三尊/逆三尊の右肩崩れ",
+        }.get(entry_type, "")
+
+        # ai_textからセクション抽出（なければ全文）
+        if ai_text:
+            msg_body = ai_text
+        else:
+            msg_body = f"分析データ処理中... 方向={direction} 確信度={conf}"
 
         msg_lines = [
             f"🤖 **ONO Estimator AI判断**",
             f"",
             f"📊 **{symbol} — {direction}** {dir_icon}",
             sep,
-            ai_text,
-            "",
-            f"Entry: {fmt(entry)} | TP: {fmt(tp)} | SL: {fmt(sl)} | RR: {rr_str}",
-            f"確信度: {conf} | 勝率予測: {prob}%",
-            sep,
         ]
-        if awareness:
-            msg_lines += [f"📚 **今回意識した理論:**", awareness]
-        if enter_demo:
-            msg_lines.append(f"🎮 DemoTrader: **{direction}** エントリー実行")
 
+        if is_range:
+            msg_lines.append("⏸ **レンジ状態 — ブレイクアウト待機中**")
+        else:
+            if entry_badge:
+                msg_lines.append(f"**エントリー根拠:** {entry_badge}")
+            msg_lines.append(msg_body)
+            msg_lines += [
+                "",
+                f"**【計画】**",
+                f"Entry: {fmt(entry)} | TP: {fmt(tp)} | SL: {fmt(sl)} | RR: {rr_str}",
+                f"確信度: {conf} | 勝率予測: {prob}%",
+            ]
+
+        msg_lines.append(sep)
+        if awareness:
+            msg_lines += [f"📚 **今回意識した手法:**", awareness[:300]]
+        if enter_demo:
+            msg_lines.append(f"🎮 **DemoTrader: {direction} エントリー実行**")
         msg_lines.append(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M JST')}")
 
         content = "\n".join(msg_lines)
@@ -234,11 +258,11 @@ class Notifier:
 
         try:
             payload = {
-                "username": "ONO Estimator AI",
+                "username": "ONO Estimator AI Scalper",
                 "embeds": [{
                     "description": content[:4000],
                     "color": color,
-                    "footer": {"text": "ONO Estimator Ultra v6.2 — AI Trader"},
+                    "footer": {"text": "ONO Estimator Ultra v6.2 — AI Scalper"},
                 }],
             }
             self.session.post(webhook, json=payload, timeout=5)
@@ -247,9 +271,11 @@ class Notifier:
 
         self._log_notification(symbol, direction, prob)
 
-    # ─── H-12: デモ売買結果通知 ──────────────────────────────────
+    # ─── H-20: デモ売買結果通知（AI教訓付き）────────────────────────
     def send_demo_result(self, pos: dict, close_price: float,
-                         result: str, pips: float, win_rate=None) -> None:
+                         result: str, pips: float, win_rate=None,
+                         ai_lesson: str = None) -> None:
+        """決済結果通知。LOSSの場合はAI自己反省教訓も掲載する。"""
         webhook = self.default_webhook
         if not webhook:
             return
@@ -260,21 +286,31 @@ class Notifier:
         icon      = "✅" if result == "WIN" else "❌"
         pips_sign = "+" if result == "WIN" else "-"
         wr_str    = f"{win_rate:.1f}%" if win_rate is not None else "---"
+        sep = "━" * 17
 
-        msg = (
-            f"{icon} **DemoTrader {result}**\n"
-            f"{sym} {direction}\n"
-            f"Entry: {entry:.3f} → Close: {close_price:.3f}\n"
-            f"{pips_sign}{abs(pips):.1f} pips\n\n"
-        )
+        msg_lines = [
+            f"{icon} **DemoTrader {result}**",
+            f"{sym} {direction}",
+            f"Entry: {entry:.5f} → Close: {close_price:.5f}",
+            f"{pips_sign}{abs(pips):.1f} pips",
+            sep,
+        ]
         if reason:
-            msg += f"📚 **エントリー根拠:**\n{reason}\n\n"
+            msg_lines += [f"📋 **エントリー根拠:**", reason[:200]]
+        msg_lines.append(f"📊 通算勝率: {wr_str}")
 
-        # 通算成績を取得して追記
-        msg += f"📊 通算勝率: {wr_str}"
+        if ai_lesson and result == "LOSS":
+            msg_lines += [
+                sep,
+                f"🧠 **AI自己反省（次回への教訓）:**",
+                ai_lesson[:300],
+            ]
 
+        msg_lines.append(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M JST')}")
+
+        msg = "\n".join(msg_lines)
+        color = 0x00C851 if result == "WIN" else 0xFF4444
         try:
-            color = 0x00C851 if result == "WIN" else 0xFF4444
             payload = {
                 "username": "ONO Estimator DemoTrader",
                 "embeds": [{"description": msg[:2000], "color": color}],

@@ -384,6 +384,8 @@ export default function Dashboard() {
   const warnings = current?.warnings || [];
   const aiText = current?.ai_text || "AI分析待機中...";
   const awarenessText = current?.awareness_text || "";
+  const isRange = current?.is_range ?? false;
+  const entryType = current?.entry_type || "NONE";
   const aligned = current?.aligned ?? 0;
   const confidence = current?.confidence || "LOW";
 
@@ -772,22 +774,43 @@ export default function Dashboard() {
               {SYMBOLS.map(sym => {
                 const d = allData[sym] || overview[sym] || {};
                 const dir = d.status || d.direction || "WAIT";
-                const col = dirColor(dir);
+                const symIsRange = d.is_range ?? false;
+                const symEntryType = d.entry_type || "NONE";
+                const col = symIsRange ? "#6b7280" : dirColor(dir);
                 const sc = d.score ?? 0;
                 const pr = d.probability ?? 0;
                 const lyr = d.layers || {};
                 return (
                   <div key={sym} onClick={() => { setActiveSymbol(sym); setActiveTab("main"); }}
                     style={{
-                      background: dirBg(dir), border: `1px solid ${dirBorder(dir)}`,
+                      background: symIsRange ? "rgba(107,114,128,0.06)" : dirBg(dir),
+                      border: `1px solid ${symIsRange ? "rgba(107,114,128,0.25)" : dirBorder(dir)}`,
                       borderRadius: 16, padding: 20, cursor: "pointer",
-                      boxShadow: dirGlow(dir), transition: "all 0.3s ease",
+                      boxShadow: symIsRange ? "none" : dirGlow(dir),
+                      transition: "all 0.3s ease",
+                      opacity: symIsRange ? 0.75 : 1,
                     }}>
                     <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 14 }}>
                       <div>
-                        <div style={{ fontSize: 16, fontWeight: 800, color: "#f1f5f9" }}>{SYMBOL_DISPLAY[sym]}</div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <div style={{ fontSize: 16, fontWeight: 800, color: "#f1f5f9" }}>{SYMBOL_DISPLAY[sym]}</div>
+                          {symIsRange && (
+                            <span style={{
+                              fontSize: 10, fontWeight: 700, color: "#9ca3af",
+                              background: "rgba(107,114,128,0.2)", border: "1px solid rgba(107,114,128,0.3)",
+                              borderRadius: 6, padding: "1px 6px", letterSpacing: 0.5,
+                            }}>⏸ RANGE</span>
+                          )}
+                          {symEntryType === "LIQUIDITY_SWEEP" && !symIsRange && (
+                            <span style={{
+                              fontSize: 10, fontWeight: 700, color: "#22d3ee",
+                              background: "rgba(34,211,238,0.1)", border: "1px solid rgba(34,211,238,0.3)",
+                              borderRadius: 6, padding: "1px 6px",
+                            }}>💦 L.SWEEP</span>
+                          )}
+                        </div>
                         <div style={{ fontSize: 13, color: col, fontWeight: 700, marginTop: 2 }}>
-                          {dir.replace("STRONG_","")}
+                          {symIsRange ? "RANGE_WAIT" : dir.replace("STRONG_","")}
                         </div>
                       </div>
                       <div style={{ textAlign: "right" }}>
@@ -971,9 +994,61 @@ export default function Dashboard() {
                     </div>
                   ) : (
                     <>
+                      {/* M-7: レンジ状態バッジ */}
+                      {isRange && (
+                        <div style={{
+                          marginBottom: 14,
+                          background: "rgba(107,114,128,0.15)",
+                          border: "1px solid rgba(107,114,128,0.4)",
+                          borderRadius: 10,
+                          padding: "10px 14px",
+                          display: "flex", alignItems: "center", gap: 10,
+                          animation: "pulse 2s ease-in-out infinite",
+                        }}>
+                          <span style={{ fontSize: 18 }}>⏸</span>
+                          <div>
+                            <div style={{ fontSize: 13, fontWeight: 700, color: "#9ca3af" }}>
+                              RANGE_WAIT — ブレイクアウト待機中
+                            </div>
+                            <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>
+                              BB幅収縮 + ATR圧縮を検知。エントリー禁止。ブレイクアウトの初動を待機してください。
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      {/* エントリー根拠バッジ */}
+                      {entryType && entryType !== "NONE" && !isRange && (
+                        <div style={{
+                          marginBottom: 14,
+                          background: entryType === "LIQUIDITY_SWEEP"
+                            ? "rgba(34,211,238,0.08)" : "rgba(167,139,250,0.08)",
+                          border: `1px solid ${entryType === "LIQUIDITY_SWEEP"
+                            ? "rgba(34,211,238,0.3)" : "rgba(167,139,250,0.25)"}`,
+                          borderRadius: 10,
+                          padding: "8px 14px",
+                          display: "flex", alignItems: "center", gap: 8,
+                        }}>
+                          <span style={{ fontSize: 14 }}>
+                            {entryType === "LIQUIDITY_SWEEP" ? "💦" :
+                             entryType === "BODY_BREAK" ? "🔷" :
+                             entryType === "WICK_DENIAL" ? "⚡" :
+                             entryType === "HAS_SHOULDER" ? "📐" : "📌"}
+                          </span>
+                          <span style={{
+                            fontSize: 12, fontWeight: 700,
+                            color: entryType === "LIQUIDITY_SWEEP" ? "#22d3ee" : "#a78bfa",
+                          }}>
+                            {entryType === "LIQUIDITY_SWEEP" ? "Liquidity Sweep 検知（最重要）" :
+                             entryType === "BODY_BREAK" ? "実体ブレイク 検知" :
+                             entryType === "WICK_DENIAL" ? "ヒゲ否定 検知" :
+                             entryType === "HAS_SHOULDER" ? "三尊/逆三尊の右肩崩れ" : entryType}
+                          </span>
+                        </div>
+                      )}
                       <div style={{
                         fontSize: 14, color: "#cbd5e1", lineHeight: 1.9,
                         whiteSpace: "pre-wrap", fontFamily: "'Noto Sans JP', sans-serif",
+                        opacity: isRange ? 0.5 : 1,
                       }}>
                         {aiText || "AI分析待機中..."}
                       </div>

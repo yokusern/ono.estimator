@@ -86,6 +86,215 @@ class TechnicalIndicators:
             if p_vals[-1] < p_vals[-2] and r_vals[-1] > r_vals[-2]: return "#BullishDivergence"
         return "None"
 
+    # ── H-5: Liquidity Sweep 検出（スキャルピング最重要シグナル）──
+    @staticmethod
+    def detect_liquidity_sweep(df: pd.DataFrame, lookback: int = 20) -> dict:
+        """他者の損切りを巻き込んだ後の方向転換を捉えるスキャルピングの核心シグナル。"""
+        if len(df) < lookback + 2:
+            return {"bull_sweep": False, "bear_sweep": False, "bull_rebreak": False,
+                    "bear_rebreak": False, "swept_high": 0.0, "swept_low": 0.0, "signal": "NONE"}
+        highs = df["high"].tail(lookback)
+        lows  = df["low"].tail(lookback)
+        recent_high = float(highs.iloc[:-2].max())
+        recent_low  = float(lows.iloc[:-2].min())
+        last = df.iloc[-1]; prev = df.iloc[-2]
+        total_range = prev["high"] - prev["low"] + 1e-10
+
+        bull_sweep = (
+            prev["low"] < recent_low and
+            prev["close"] > recent_low and
+            prev["close"] > prev["open"] and
+            (min(prev["open"], prev["close"]) - prev["low"]) / total_range > 0.3
+        )
+        bear_sweep = (
+            prev["high"] > recent_high and
+            prev["close"] < recent_high and
+            prev["close"] < prev["open"] and
+            (prev["high"] - max(prev["open"], prev["close"])) / total_range > 0.3
+        )
+        bull_rebreak = bull_sweep and last["close"] > max(prev["open"], prev["close"])
+        bear_rebreak = bear_sweep and last["close"] < min(prev["open"], prev["close"])
+
+        return {
+            "bull_sweep":   bool(bull_sweep),
+            "bear_sweep":   bool(bear_sweep),
+            "bull_rebreak": bool(bull_rebreak),
+            "bear_rebreak": bool(bear_rebreak),
+            "swept_high":   recent_high,
+            "swept_low":    recent_low,
+            "signal": (
+                "BULL_LIQUIDITY_SWEEP" if bull_rebreak else
+                "BEAR_LIQUIDITY_SWEEP" if bear_rebreak else
+                "BULL_SWEEP_PENDING"   if bull_sweep   else
+                "BEAR_SWEEP_PENDING"   if bear_sweep   else "NONE"
+            ),
+        }
+
+    # ── H-6: 実体ブレイク検出 ─────────────────────────────────────
+    @staticmethod
+    def detect_body_break(df: pd.DataFrame, resistance: float, support: float) -> dict:
+        """ヒゲではなく実体でS/Rを突破したか確認。ヒゲブレイクは騙しとして無視。"""
+        if len(df) < 1 or resistance <= 0 or support <= 0:
+            return {"bull_body_break": False, "bear_body_break": False,
+                    "wick_only_bull": False, "wick_only_bear": False}
+        last = df.iloc[-1]
+        body_high = max(last["open"], last["close"])
+        body_low  = min(last["open"], last["close"])
+        bull_body_break = body_high > resistance
+        bear_body_break = body_low  < support
+        return {
+            "bull_body_break": bool(bull_body_break),
+            "bear_body_break": bool(bear_body_break),
+            "wick_only_bull":  bool(last["high"] > resistance and not bull_body_break),
+            "wick_only_bear":  bool(last["low"]  < support    and not bear_body_break),
+        }
+
+    # ── H-7: ヒゲ否定検出 ─────────────────────────────────────────
+    @staticmethod
+    def detect_wick_denial(df: pd.DataFrame) -> dict:
+        """前の足のヒゲ先端を現在足の実体が塗りつぶした時の転換シグナル。"""
+        if len(df) < 2:
+            return {"bull_denial": False, "bear_denial": False,
+                    "denied_wick_high": 0.0, "denied_wick_low": 0.0}
+        last = df.iloc[-1]; prev = df.iloc[-2]
+        body_high = max(last["open"], last["close"])
+        body_low  = min(last["open"], last["close"])
+        bull_denial = (
+            prev["low"] < min(prev["open"], prev["close"]) and
+            body_low > prev["low"] and last["close"] > prev["close"]
+        )
+        bear_denial = (
+            prev["high"] > max(prev["open"], prev["close"]) and
+            body_high < prev["high"] and last["close"] < prev["close"]
+        )
+        return {
+            "bull_denial": bool(bull_denial),
+            "bear_denial": bool(bear_denial),
+            "denied_wick_high": float(prev["high"]),
+            "denied_wick_low":  float(prev["low"]),
+        }
+
+    # ── H-8: 勢い減衰検出 ─────────────────────────────────────────
+    @staticmethod
+    def detect_momentum_decay(df: pd.DataFrame, lookback: int = 5) -> dict:
+        """ローソク足実体が大→中→小と縮小しているか。反発・転換の前触れ。"""
+        if len(df) < 3:
+            return {"is_decaying": False, "decay_ratio": 1.0, "signal": "NONE"}
+        recent = df.tail(lookback)
+        bodies = (recent["close"] - recent["open"]).abs()
+        is_decaying = bool(bodies.iloc[-1] < bodies.iloc[-2] < bodies.iloc[-3])
+        decay_ratio = float(bodies.iloc[-1] / bodies.iloc[-3]) if bodies.iloc[-3] > 0 else 1.0
+        return {
+            "is_decaying": is_decaying,
+            "decay_ratio": round(decay_ratio, 2),
+            "signal": "MOMENTUM_DECAY" if is_decaying and decay_ratio < 0.5 else "NONE",
+        }
+
+    # ── H-9: セカンドテスト検出 ───────────────────────────────────
+    @staticmethod
+    def detect_second_test(df: pd.DataFrame, level: float, tolerance: float = 0.001) -> dict:
+        """同じレベルへの2度目のタッチで切り上げ/切り下げを確認。反発の信頼性確認。"""
+        if len(df) < 5 or level <= 0:
+            return {"bull_second_test": False, "bear_second_test": False, "touch_count": 0}
+        tol = level * tolerance
+        lows  = df["low"].tail(20)
+        highs = df["high"].tail(20)
+        touches_low  = lows[(lows - level).abs() < tol]
+        touches_high = highs[(highs - level).abs() < tol]
+        bull = bool(len(touches_low) >= 2 and lows.iloc[-1] > touches_low.iloc[0])
+        bear = bool(len(touches_high) >= 2 and highs.iloc[-1] < touches_high.iloc[0])
+        return {
+            "bull_second_test": bull, "bear_second_test": bear,
+            "touch_count": max(len(touches_low), len(touches_high)),
+        }
+
+    # ── H-10: レンジ状態自動検出 ─────────────────────────────────
+    @staticmethod
+    def detect_range_state(df: pd.DataFrame, bb_ratio: float = 0.6, atr_ratio: float = 0.7) -> dict:
+        """BBバンド幅とATR両方が収縮している時にレンジ確定。レンジ中はエントリー禁止。"""
+        if len(df) < 21:
+            return {"is_range": False, "bb_squeezed": False, "atr_compressed": False,
+                    "bb_width_ratio": 1.0, "atr_ratio": 1.0,
+                    "range_high": 0.0, "range_low": 0.0,
+                    "breakout_up": False, "breakout_down": False}
+        close = df["close"]; high = df["high"]; low = df["low"]
+        std = close.rolling(20).std()
+        bb_w = (std * 2).iloc[-1]
+        bb_w_avg = (std * 2).rolling(20).mean().iloc[-1]
+        bb_squeezed = bool(bb_w < bb_w_avg * bb_ratio) if bb_w_avg > 0 else False
+
+        tr = pd.concat([high - low,
+                        (high - close.shift()).abs(),
+                        (low  - close.shift()).abs()], axis=1).max(axis=1)
+        atr_now = tr.rolling(14).mean().iloc[-1]
+        atr_avg = tr.rolling(14).mean().rolling(20).mean().iloc[-1]
+        atr_low = bool(atr_now < atr_avg * atr_ratio) if atr_avg > 0 else False
+
+        is_range = bb_squeezed and atr_low
+        rh = float(high.tail(20).max()); rl = float(low.tail(20).min())
+        cur = float(close.iloc[-1])
+        return {
+            "is_range":       is_range,
+            "bb_squeezed":    bb_squeezed,
+            "atr_compressed": atr_low,
+            "bb_width_ratio": round(float(bb_w / bb_w_avg) if bb_w_avg > 0 else 1.0, 2),
+            "atr_ratio":      round(float(atr_now / atr_avg) if atr_avg > 0 else 1.0, 2),
+            "range_high":     rh,
+            "range_low":      rl,
+            "breakout_up":    bool(cur > rh),
+            "breakout_down":  bool(cur < rl),
+        }
+
+    # ── H-11: RSI on Bollinger Bands ─────────────────────────────
+    @staticmethod
+    def rsi_with_bb(close: pd.Series, rsi_period: int = 14,
+                    bb_period: int = 20, bb_std: float = 2.0) -> dict:
+        """RSI自体にBBを適用。RSIがBB外に出た時=異常過熱=反転の予兆。"""
+        if len(close) < bb_period + rsi_period:
+            return {"rsi": 50.0, "rsi_bb_upper": 70.0, "rsi_bb_lower": 30.0,
+                    "rsi_bb_mid": 50.0, "above_bb": False, "below_bb": False,
+                    "bearish_divergence": False, "bullish_divergence": False}
+        delta = close.diff()
+        gain  = delta.where(delta > 0, 0).rolling(rsi_period).mean()
+        loss  = (-delta.where(delta < 0, 0)).rolling(rsi_period).mean()
+        rs    = gain / loss.replace(0, float("nan"))
+        rsi   = 100 - (100 / (1 + rs))
+        rsi_ma  = rsi.rolling(bb_period).mean()
+        rsi_std = rsi.rolling(bb_period).std()
+        rv = float(rsi.iloc[-1]); up = float(rsi_ma.iloc[-1] + rsi_std.iloc[-1] * bb_std)
+        lo = float(rsi_ma.iloc[-1] - rsi_std.iloc[-1] * bb_std)
+
+        tail20 = close.tail(20); rsi20 = rsi.tail(20)
+        bearish_div = bool(tail20.iloc[-1] > tail20.iloc[-10] and rsi20.iloc[-1] < rsi20.iloc[-10])
+        bullish_div = bool(tail20.iloc[-1] < tail20.iloc[-10] and rsi20.iloc[-1] > rsi20.iloc[-10])
+        return {
+            "rsi": round(rv, 1), "rsi_bb_upper": round(up, 1),
+            "rsi_bb_lower": round(lo, 1), "rsi_bb_mid": round(float(rsi_ma.iloc[-1]), 1),
+            "above_bb": bool(rv > up), "below_bb": bool(rv < lo),
+            "bearish_divergence": bearish_div, "bullish_divergence": bullish_div,
+        }
+
+    # ── H-15: フィボナッチリトレースメント ───────────────────────
+    @staticmethod
+    def fibonacci_levels(df: pd.DataFrame, lookback: int = 50) -> dict:
+        """直近スイングのHigh/Lowからフィボレベルを計算。50%/61.8%を特に重視。"""
+        if len(df) < 5:
+            return {"swing_high": 0.0, "swing_low": 0.0, "fib_236": 0.0, "fib_382": 0.0,
+                    "fib_500": 0.0, "fib_618": 0.0, "fib_786": 0.0, "near_fib_level": None}
+        recent = df.tail(lookback)
+        sh = float(recent["high"].max()); sl = float(recent["low"].min())
+        d = sh - sl
+        levels = {"swing_high": sh, "swing_low": sl,
+                  "fib_236": sh - d * 0.236, "fib_382": sh - d * 0.382,
+                  "fib_500": sh - d * 0.500, "fib_618": sh - d * 0.618,
+                  "fib_786": sh - d * 0.786}
+        cur = float(df["close"].iloc[-1]); near = None
+        for k, v in levels.items():
+            if isinstance(v, float) and v > 0 and abs(cur - v) / v < 0.002:
+                near = k; break
+        levels["near_fib_level"] = near
+        return levels
+
     # ── H-4: グランビルパターン自動検出 ──────────────────────────
     @staticmethod
     def detect_granville(close: pd.Series, ma: pd.Series) -> str:
