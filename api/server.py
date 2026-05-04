@@ -812,7 +812,8 @@ def status():
 
 @app.get("/api/predict")
 def get_prediction(tf: str = Query("1h", pattern="^(1m|5m|15m|30m|1h|4h)$")):
-    tf_state = {sym: states.get(tf) for sym, states in system_state.items()}
+    # フロントは短縮銘柄キー（USDJPY, GOLD…）で参照する。内部は Yahoo ティッカーで保持。
+    tf_state = {_short(sym): states.get(tf) for sym, states in system_state.items()}
     return {
         "data": tf_state,
         "overview": market_overview,

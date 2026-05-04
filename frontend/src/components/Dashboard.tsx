@@ -364,7 +364,11 @@ export default function Dashboard() {
   const isConnected = !error && !isLoading;
   const current = useMemo(() => data?.data?.[activeSymbol] || {}, [data, activeSymbol]);
   const chartData: any[] = chartRaw?.data || [];
-  const overview = overviewRaw?.data || {};
+  const overview = useMemo(() => {
+    const rows = overviewRaw?.symbols;
+    if (!Array.isArray(rows)) return {} as Record<string, any>;
+    return Object.fromEntries(rows.map((row: any) => [row.symbol, row]));
+  }, [overviewRaw]);
   const allData = data?.data || {};
 
   const dir = current?.status || current?.direction || "WAIT";
