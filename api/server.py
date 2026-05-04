@@ -151,7 +151,7 @@ _startup_done = False
 fetcher     = HybridDataFetcher()
 engine_v2   = ONOPredictionEngineV2() if _V2 else None
 db          = SupabaseClient()
-ai_analyzer = GeminiAnalyzer(db=db)   # db渡してAI Memoryを有効化
+ai_analyzer = GeminiAnalyzer()         # H-1: 新API (db引数なし)
 notifier    = Notifier(db=db)
 backtester  = Backtester(db, price_cache) if _HAS_BACKTEST else None
 trade_mon   = TradeMonitor(db, notifier) if _HAS_MONITOR else None
@@ -557,17 +557,23 @@ async def estimation_loop():
                         ref_score = tf_results.get(ANALYSIS_TF, {}).get("score", 0)
                         last_ai_score[sym] = ref_score
 
-                        feedback      = _get_feedback(sym)
-                        v6_prompt     = tf_results.get(ANALYSIS_TF, {}).get("gemini_prompt")
-                        engine_signals = tf_results.get("_engine_signals")
+                        feedback       = _get_feedback(sym)
+                        engine_signals = tf_results.get("_engine_signals") or {}
+                        engine_signals["current_price"] = price_cache.get(sym, 0)
 
                         ai_data = ai_analyzer.analyze_single(
-                            sym, {"mtf": tf_results},
+                            sym,
+                            {"current_price": price_cache.get(sym, 0)},
                             feedback=feedback,
-                            gemini_prompt_override=v6_prompt,
                             engine_signals=engine_signals,
                         )
                         if ai_data:
+                            # 新フォーマット (entry_price/sl_price/tp_price) を旧名に正規化
+                            ai_data.setdefault("entry", ai_data.get("entry_price"))
+                            ai_data.setdefault("sl",    ai_data.get("sl_price"))
+                            ai_data.setdefault("tp1",   ai_data.get("tp_price"))
+                            ai_data.setdefault("direction", "WAIT")
+                            ai_data.setdefault("basis", (ai_data.get("ai_text") or "")[:80])
                             for tf in TIMEFRAMES:
                                 system_state[sym][tf].update({
                                     "ai_text":        ai_data.get("ai_text", ""),
@@ -583,7 +589,7 @@ async def estimation_loop():
                                     "signal_quality": ai_data.get("signal_quality", "LOW"),
                                     "should_notify":  ai_data.get("should_notify", False),
                                     "rr_ratio":       ai_data.get("rr_ratio"),
-                                    "cached":         ai_data.get("cached", False),
+                                    "cached":         False,
                                     "last_updated":   datetime.now().isoformat(),
                                 })
                             ref_state = system_state[sym][ANALYSIS_TF]
@@ -724,9 +730,11 @@ async def auto_evaluate_loop():
                         try:
                             losses = [l for l in perf.get("logs", []) if l.get("outcome") == "LOSS"][:5]
                             if losses:
-                                lesson = ai_analyzer.generate_self_reflection(sym, losses)
+                                gen_fn = getattr(ai_analyzer, "generate_self_reflection", None)
+                                lesson = gen_fn(sym, losses) if gen_fn else None
                                 if lesson:
-                                    ai_analyzer.save_ai_lesson(sym, lesson, wr)
+                                    save_fn = getattr(ai_analyzer, "save_ai_lesson", None)
+                                    if save_fn: save_fn(sym, lesson, wr)
                                     print(f"[AIReflect] {sym}: {lesson[:50]}...")
                         except Exception: pass
         except Exception as e:
@@ -1251,9 +1259,11 @@ async def ai_reflect(body: dict):
         losses = [l for l in logs if l.get("outcome") == "LOSS"][:5]
         if not losses:
             return {"lesson": None, "message": "負けトレードなし"}
-        lesson = ai_analyzer.generate_self_reflection(symbol, losses)
+        gen_fn = getattr(ai_analyzer, "generate_self_reflection", None)
+        lesson = gen_fn(symbol, losses) if gen_fn else None
         if lesson:
-            ai_analyzer.save_ai_lesson(symbol, lesson, wr)
+            save_fn = getattr(ai_analyzer, "save_ai_lesson", None)
+            if save_fn: save_fn(symbol, lesson, wr)
         return {"lesson": lesson, "win_rate": wr}
     except Exception as e:
         return {"error": str(e)}
@@ -1264,11 +1274,12 @@ async def system_status():
     """システム自己診断ダッシュボード (管理者用)"""
     now = int(time.time())
 
-    # Gemini APIキー状態
-    gemini_keys_count = len(ai_analyzer._keys) if hasattr(ai_analyzer, "_keys") else 0
-    current_key_idx = getattr(ai_analyzer, "_key_idx", 0)
-    current_model_idx = getattr(ai_analyzer, "_model_idx", 0)
-    current_model = MODEL_FALLBACK_ORDER[current_model_idx % len(MODEL_FALLBACK_ORDER)] if _V2 else "N/A"
+    # Gemini APIキー状態 (新APIに対応)
+    gemini_keys = getattr(ai_analyzer, "api_keys", getattr(ai_analyzer, "_keys", []))
+    gemini_keys_count = len(gemini_keys)
+    current_key_idx   = getattr(ai_analyzer, "_key_idx", 0)
+    fallback_models   = getattr(ai_analyzer, "fallback_models", ["gemini-2.0-flash"])
+    current_model     = getattr(ai_analyzer, "model_name", fallback_models[0])
 
     # Supabase テーブル行数
     table_counts = {}
@@ -1317,7 +1328,6 @@ async def system_status():
             "current_key_index": current_key_idx,
             "current_model": current_model,
             "calls_last_minute": len(_gemini_times),
-            "model_fallback_level": current_model_idx,
             "ai_active": getattr(ai_analyzer, "model", None) is not None,
         },
 
