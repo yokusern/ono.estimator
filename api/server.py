@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 
 # ─── Core modules ──────────────────────────────────────────────
 from ono_estimator.core.hybrid_fetcher import HybridDataFetcher
-from ono_estimator.core.ai_analyzer import GeminiAnalyzer, MODEL_FALLBACK_ORDER
+from ono_estimator.core.ai_analyzer import GeminiAnalyzer
 from ono_estimator.core.database import SupabaseClient
 from ono_estimator.core.notifier import Notifier
 
