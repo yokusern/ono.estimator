@@ -259,6 +259,19 @@ class GeminiAnalyzer:
             elliott_wave    = es.get("elliott_wave", "不明")
             elliott_wave3   = es.get("elliott_wave3", False)
 
+            # ── M-1: EMAクロス ──
+            ema_signal      = es.get("ema_signal", "NONE")
+            ema_gc          = es.get("ema_golden_cross", False)
+            ema_dc          = es.get("ema_dead_cross", False)
+            ema_fast_above  = es.get("ema_fast_above", False)
+            ema_angle       = float(es.get("ema_angle", 0.0))
+
+            # ── M-5: 吸収（Absorption）──
+            abs_signal      = es.get("absorption_signal", "NONE")
+            bull_abs        = es.get("bull_absorption", False)
+            bear_abs        = es.get("bear_absorption", False)
+            abs_wick_ratio  = float(es.get("absorption_wick_ratio", 0.0))
+
             # ── スキャルピング戦略指標（H-5〜H-15）──
             liq_signal      = es.get("liq_signal", "NONE")
             liq_bull_sweep  = es.get("liq_bull_sweep", False)
@@ -392,9 +405,11 @@ class GeminiAnalyzer:
                 f"- MACDダイバージェンス: {macd_div}",
                 f"- 三尊・逆三尊: {hs_pattern}" + (f" | ネックライン:{hs_neckline}" if hs_neckline else "") + (f" | バイアス:{hs_bias}" if hs_bias != 'NONE' else ""),
                 f"- エリオット波動: {elliott_str}",
+                f"- EMAクロス(M-1): {'🟢GC発生' if ema_gc else '🔴DC発生' if ema_dc else ('速MA上位' if ema_fast_above else '速MA下位')} | 角度={ema_angle:.4f}",
                 "",
                 "【Step4: 反発確認（3根拠揃えること）】",
                 f"- 勢い減衰: {'あり（大→中→小、縮小率{:.0f}%）'.format(decay_ratio*100) if momentum_decay else 'なし'}",
+                f"- 吸収（Absorption・M-5）: {'🟢買い吸収（下ヒゲ長・安値支持）' if bull_abs else '🔴売り吸収（上ヒゲ長・高値抵抗）' if bear_abs else 'なし'}" + (f" ヒゲ比率{abs_wick_ratio:.0%}" if abs_signal != 'NONE' else ""),
                 f"- RSI on BB: {rsi_bb_str}",
                 f"- RSI 15m={rsi_15m:.1f} / 1H={rsi_1h:.1f} | 状態: {rsi_state}",
                 f"- ATR(1H,14): {atr_1h:.5f}（SL参考: ATR×0.5〜0.7以内）",

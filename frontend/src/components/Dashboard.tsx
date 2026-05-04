@@ -1101,6 +1101,49 @@ export default function Dashboard() {
 
                 <NotificationPreview symbol={activeSymbol} d={current} />
 
+                {/* M-6: RSI on BB ミニゲージ */}
+                {(() => {
+                  const rsiVal = Number(current?.rsi_val || current?.rsi || 50);
+                  const rsiAboveBB = current?.rsi_above_bb ?? false;
+                  const rsiBelowBB = current?.rsi_below_bb ?? false;
+                  const rsiColor = rsiAboveBB ? "#fb7185" : rsiBelowBB ? "#22d3ee" : "#f59e0b";
+                  const rsiLabel = rsiAboveBB ? "BB上抜け — 過熱（売り予兆）" :
+                                   rsiBelowBB ? "BB下抜け — 過冷（買い予兆）" : "BB内 — 通常";
+                  if (!rsiVal) return null;
+                  const pct = Math.max(0, Math.min(100, rsiVal));
+                  return (
+                    <div style={{
+                      background: "rgba(255,255,255,0.02)", border: `1px solid ${rsiColor}33`,
+                      borderRadius: 16, padding: 16,
+                    }}>
+                      <div style={{ fontSize: 11, color: "#64748b", letterSpacing: 1, marginBottom: 12 }}>RSI on BB</div>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                        <span style={{ fontSize: 11, color: rsiColor }}>{rsiLabel}</span>
+                        <span style={{ fontSize: 24, fontWeight: 900, color: rsiColor }}>{rsiVal.toFixed(1)}</span>
+                      </div>
+                      {/* RSIゲージバー */}
+                      <div style={{ position: "relative", height: 10, background: "rgba(255,255,255,0.06)", borderRadius: 5, overflow: "hidden" }}>
+                        {/* BB帯（30〜70を通常帯として表示）*/}
+                        <div style={{
+                          position: "absolute", left: "30%", width: "40%", height: "100%",
+                          background: "rgba(167,139,250,0.15)", borderLeft: "1px solid rgba(167,139,250,0.3)",
+                          borderRight: "1px solid rgba(167,139,250,0.3)",
+                        }} />
+                        {/* RSI位置マーカー */}
+                        <div style={{
+                          position: "absolute", left: `${pct}%`, top: 0,
+                          width: 3, height: "100%", background: rsiColor,
+                          transform: "translateX(-50%)", borderRadius: 2,
+                          boxShadow: `0 0 6px ${rsiColor}`,
+                        }} />
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontSize: 9, color: "#4b5563" }}>
+                        <span>0 (売られすぎ)</span><span>50</span><span>100 (買われすぎ)</span>
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 {/* Market overview text */}
                 {data?.overview?.global_theme && (
                   <div style={{

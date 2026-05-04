@@ -458,6 +458,116 @@ class TechnicalIndicators:
         label_map = {1:"第1波",2:"第2波",3:"第3波",4:"第4波",5:"第5波",6:"A波",7:"B波",8:"C波"}
         return {"wave_count": min(n,8), "wave_label": label_map.get(min(n,8), f"第{n}波"), "wave3_detected": wave3_detected}
 
+    # ── M-1: EMAクロス検出（短期/中期の角度も評価）────────────────
+    @staticmethod
+    def detect_ema_cross(close: pd.Series, fast: int = 8, slow: int = 21) -> dict:
+        """
+        EMAクロス検出 + 角度評価:
+        短期EMAが中期EMAを上抜け/下抜けしたかを検出。
+        クロス角度（傾き）が急なほど勢いが強い。
+        """
+        if len(close) < slow + 3:
+            return {"golden_cross": False, "dead_cross": False,
+                    "fast_above": False, "angle_deg": 0.0,
+                    "fast_ema": 0.0, "slow_ema": 0.0, "signal": "NONE"}
+        ema_fast = close.ewm(span=fast, adjust=False).mean()
+        ema_slow = close.ewm(span=slow, adjust=False).mean()
+
+        fast_now  = float(ema_fast.iloc[-1])
+        fast_prev = float(ema_fast.iloc[-2])
+        slow_now  = float(ema_slow.iloc[-1])
+        slow_prev = float(ema_slow.iloc[-2])
+
+        golden_cross = fast_prev <= slow_prev and fast_now > slow_now
+        dead_cross   = fast_prev >= slow_prev and fast_now < slow_now
+        fast_above   = fast_now > slow_now
+
+        # 傾き = 直近3本での変化率（角度の代替指標）
+        diff_now  = fast_now  - slow_now
+        diff_prev = float(ema_fast.iloc[-3]) - float(ema_slow.iloc[-3])
+        angle_deg = round(float(diff_now - diff_prev) / (close.iloc[-1] + 1e-10) * 1000, 4)
+
+        signal = "NONE"
+        if golden_cross:
+            signal = "GOLDEN_CROSS"
+        elif dead_cross:
+            signal = "DEAD_CROSS"
+        elif fast_above and angle_deg > 0:
+            signal = "BULL_MOMENTUM"
+        elif not fast_above and angle_deg < 0:
+            signal = "BEAR_MOMENTUM"
+
+        return {
+            "golden_cross": golden_cross,
+            "dead_cross":   dead_cross,
+            "fast_above":   fast_above,
+            "angle_deg":    angle_deg,
+            "fast_ema":     round(fast_now, 5),
+            "slow_ema":     round(slow_now, 5),
+            "signal":       signal,
+        }
+
+    # ── M-5: 吸収（Absorption）検出 ─────────────────────────────
+    @staticmethod
+    def detect_absorption(df: pd.DataFrame, vol_spike_ratio: float = 1.5) -> dict:
+        """
+        吸収（Absorption）検出:
+        抵抗帯タッチ時に出来高スパイク + 長いヒゲが発生 = 売り圧力を吸収している。
+        次の足での反転の可能性が高い。
+        出来高データがない場合はヒゲの長さのみで判定する。
+        """
+        if len(df) < 5:
+            return {"bull_absorption": False, "bear_absorption": False,
+                    "vol_spike": False, "wick_ratio": 0.0, "signal": "NONE"}
+
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+
+        # ヒゲ比率 = ヒゲ長 / 全体レンジ
+        total_range = last["high"] - last["low"] + 1e-10
+        lower_wick = min(last["open"], last["close"]) - last["low"]
+        upper_wick = last["high"] - max(last["open"], last["close"])
+        lower_wick_ratio = lower_wick / total_range
+        upper_wick_ratio = upper_wick / total_range
+
+        # 出来高スパイク判定（出来高列がある場合）
+        vol_spike = False
+        if "volume" in df.columns:
+            try:
+                avg_vol = float(df["volume"].tail(20).mean())
+                last_vol = float(last["volume"])
+                vol_spike = last_vol > avg_vol * vol_spike_ratio and avg_vol > 0
+            except Exception:
+                pass
+
+        # 買い吸収: 下ヒゲが長い（安値圏でのサポート確認）
+        bull_absorption = (
+            lower_wick_ratio > 0.45 and          # 下ヒゲが45%以上
+            last["close"] > prev["close"] and     # 終値が前足より上
+            (vol_spike or lower_wick_ratio > 0.6) # 出来高スパイクまたは強いヒゲ
+        )
+
+        # 売り吸収: 上ヒゲが長い（高値圏でのレジスタンス確認）
+        bear_absorption = (
+            upper_wick_ratio > 0.45 and           # 上ヒゲが45%以上
+            last["close"] < prev["close"] and      # 終値が前足より下
+            (vol_spike or upper_wick_ratio > 0.6)  # 出来高スパイクまたは強いヒゲ
+        )
+
+        signal = "NONE"
+        if bull_absorption:
+            signal = "BULL_ABSORPTION"
+        elif bear_absorption:
+            signal = "BEAR_ABSORPTION"
+
+        return {
+            "bull_absorption": bool(bull_absorption),
+            "bear_absorption": bool(bear_absorption),
+            "vol_spike":       vol_spike,
+            "wick_ratio":      round(max(lower_wick_ratio, upper_wick_ratio), 2),
+            "signal":          signal,
+        }
+
 
 class PriceAction:
     @staticmethod

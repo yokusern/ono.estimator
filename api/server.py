@@ -465,6 +465,22 @@ def _build_engine_signals(sym: str, tf_results: dict, df_store: dict) -> dict:
             price_vs_ma200 = "ABOVE" if cur_1m > ma200_1m else "BELOW"
         except Exception: pass
 
+    # ── M-1: EMAクロス検出（短期/中期の角度も評価）1H ──
+    ema_result = {"golden_cross": False, "dead_cross": False, "fast_above": False,
+                  "angle_deg": 0.0, "fast_ema": 0.0, "slow_ema": 0.0, "signal": "NONE"}
+    if df1h is not None and len(df1h) >= 24:
+        try:
+            ema_result = TechnicalIndicators.detect_ema_cross(df1h["close"])
+        except Exception: pass
+
+    # ── M-5: 吸収（Absorption）検出 1m ──
+    absorption_result = {"bull_absorption": False, "bear_absorption": False,
+                         "vol_spike": False, "wick_ratio": 0.0, "signal": "NONE"}
+    if df1m is not None and len(df1m) >= 5:
+        try:
+            absorption_result = TechnicalIndicators.detect_absorption(df1m)
+        except Exception: pass
+
     # ── RSIダイバージェンス（M-3）──
     divergence = "None"
     if df1h is not None:
@@ -540,6 +556,14 @@ def _build_engine_signals(sym: str, tf_results: dict, df_store: dict) -> dict:
         iron_patterns.append("RANGE_WAIT")
     if fib_result.get("near_fib_level"):
         iron_patterns.append(f"Fib:{fib_result['near_fib_level']}")
+    # M-1: EMAクロス
+    ema_sig = ema_result.get("signal", "NONE")
+    if ema_sig not in ("NONE", ""):
+        iron_patterns.append(f"EMA:{ema_sig}")
+    # M-5: Absorption
+    abs_sig = absorption_result.get("signal", "NONE")
+    if abs_sig not in ("NONE", ""):
+        iron_patterns.append(f"Absorption:{abs_sig}")
 
     session_str = get_active_session(datetime.utcnow().hour)
 
@@ -637,6 +661,17 @@ def _build_engine_signals(sym: str, tf_results: dict, df_store: dict) -> dict:
         # MA200 on 1m
         "ma200_1m":          ma200_1m,
         "price_vs_ma200":    price_vs_ma200,
+        # M-1: EMAクロス
+        "ema_signal":        ema_result.get("signal", "NONE"),
+        "ema_golden_cross":  ema_result.get("golden_cross", False),
+        "ema_dead_cross":    ema_result.get("dead_cross", False),
+        "ema_fast_above":    ema_result.get("fast_above", False),
+        "ema_angle":         ema_result.get("angle_deg", 0.0),
+        # M-5: 吸収（Absorption）
+        "absorption_signal": absorption_result.get("signal", "NONE"),
+        "bull_absorption":   absorption_result.get("bull_absorption", False),
+        "bear_absorption":   absorption_result.get("bear_absorption", False),
+        "absorption_wick_ratio": absorption_result.get("wick_ratio", 0.0),
     }
 
 
@@ -856,7 +891,7 @@ async def ai_loop():
                 ai_data.setdefault("direction", "WAIT")
                 ai_data.setdefault("basis",  (ai_data.get("ai_text") or "")[:80])
 
-                # system_state 更新（全TF）
+                # system_state 更新（全TF）— スキャルピングフィールドも含む
                 for tf in TIMEFRAMES:
                     system_state[sym][tf].update({
                         "ai_text":        ai_data.get("ai_text", ""),
@@ -873,6 +908,13 @@ async def ai_loop():
                         "rr_ratio":       ai_data.get("rr_ratio"),
                         "cached":         False,
                         "last_updated":   datetime.now().isoformat(),
+                        # スキャルピング特化フィールド（フロント表示用）
+                        "is_range":       ai_data.get("is_range", False),
+                        "entry_type":     ai_data.get("entry_type", "NONE"),
+                        "predicted_price": ai_data.get("predicted_price", 0),
+                        "step1_trend":    ai_data.get("step1_trend", ""),
+                        "step2_range":    ai_data.get("step2_range", ""),
+                        "step3_entry_type": ai_data.get("step3_entry_type", ""),
                     })
 
                 ref_state = system_state[sym][ANALYSIS_TF]
@@ -981,7 +1023,7 @@ async def anti_sleep_loop():
         try:
             requests.get(f"{RENDER_URL}/api/health", timeout=10)
         except Exception: pass
-        await asyncio.sleep(240)
+        await asyncio.sleep(120)
 
 
 async def auto_evaluate_loop():
