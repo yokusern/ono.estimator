@@ -134,7 +134,8 @@ def _default_sym_state():
 system_state = {sym: _default_sym_state() for sym in SYMBOLS}
 chart_cache  = {sym: {tf: [] for tf in TIMEFRAMES} for sym in SYMBOLS}
 price_cache  = {sym: 0.0 for sym in SYMBOLS}
-last_ai_call = {sym: 0.0 for sym in SYMBOLS}
+last_ai_call  = {sym: 0.0 for sym in SYMBOLS}
+last_ai_score = {sym: 0   for sym in SYMBOLS}  # H-1: スコア変化検知用
 market_overview = {
     "global_theme": "市場データを同期中...",
     "last_update_ts": 0, "mode": "Starting",
@@ -175,12 +176,23 @@ def _is_market_open(sym: str) -> bool:
     if wd == 5 or (wd == 6 and now.hour < 21): return False
     return True
 
+def get_active_session(utc_hour: int) -> str:
+    """M-2: UTCアワーからセッション名を返す"""
+    if 0  <= utc_hour <  8:  return "Tokyo（低ボラ・様子見推奨）"
+    if 8  <= utc_hour < 13:  return "London（中〜高ボラ）"
+    if 13 <= utc_hour < 16:  return "NY_Overlap（最高ボラ・最重要）"
+    if 16 <= utc_hour < 21:  return "NY（高ボラ）"
+    return "Off-hours"
+
 def _needs_ai(sym: str) -> bool:
+    """H-1: 時間経過 or スコアが±10以上変化した場合にAI呼び出し"""
     now = time.time()
     last = last_ai_call.get(sym, 0)
+    current_score = system_state[sym][ANALYSIS_TF].get("score", 0)
+    score_changed = abs(current_score - last_ai_score.get(sym, 0)) >= 10
     if _is_crypto(sym): return True
-    if _is_market_open(sym): return (now - last) > 58
-    return (now - last) > 3600
+    if _is_market_open(sym): return (now - last) > 58 or score_changed
+    return (now - last) > 3600 or score_changed
 
 def _can_gemini() -> bool:
     now = time.time()
@@ -306,13 +318,122 @@ def _calc_mtf_confluence(sym: str) -> dict:
     }
 
 
+# ─── H-7: エンジンシグナル構築 ─────────────────────────────────
+def _build_engine_signals(sym: str, tf_results: dict, df_store: dict) -> dict:
+    """分析済みTF結果とDFからGeminiプロンプト用のengine_signalsを構築"""
+    from ono_estimator.filters.momentum import MomentumFilter
+    from ono_estimator.indicators.technical import TechnicalIndicators
+    import pandas as pd
+
+    ref   = tf_results.get(ANALYSIS_TF, {})
+    price = ref.get("price", 0)
+    layers = ref.get("layers", {})
+
+    # BB スコア (H-5)
+    bb_result = {}
+    if "15m" in df_store and "1h" in df_store:
+        try:
+            mf = MomentumFilter()
+            bb_result = mf._calc_bb_score(
+                df_store["15m"], df_store["1h"], df_store.get("4h")
+            )
+        except Exception as e:
+            print(f"[BBScore] {sym}: {e}")
+
+    # ATR + ボラティリティレジーム (H-8 / L-3)
+    atr_1h   = 0.0
+    vol_result = {"regime": "NORMAL", "ratio": 1.0}
+    if "1h" in df_store:
+        df1h = df_store["1h"]
+        if all(c in df1h.columns for c in ["high", "low", "close"]):
+            try:
+                vr = TechnicalIndicators.volatility_regime(df1h["high"], df1h["low"], df1h["close"])
+                atr_1h     = vr.get("atr", 0.0)
+                vol_result = vr
+            except Exception: pass
+
+    # S/R キーレベル (M-3)
+    key_levels = {}
+    if "1h" in df_store:
+        try:
+            key_levels = TechnicalIndicators.find_key_levels(df_store["1h"])
+        except Exception: pass
+
+    # RSI divergence (M-4)
+    divergence = "None"
+    if "1h" in df_store:
+        try:
+            df1h = df_store["1h"]
+            rsi_s = TechnicalIndicators.rsi(df1h["close"])
+            divergence = TechnicalIndicators.detect_divergence(df1h["close"], rsi_s)
+        except Exception: pass
+
+    # Fear & Greed (M-5: FRED連携ずみ値を使用)
+    vix_val = fred_cache.get("data", {}).get("VIXCLS", {})
+    if isinstance(vix_val, dict): vix_val = vix_val.get("value", 20)
+    fear_greed_str = f"VIX={vix_val}" if vix_val else "不明"
+
+    # MACD/RSI from momentum layer
+    mom_layer = {}
+    if isinstance(layers, dict):
+        for k in ("momentum", "Momentum", "mom"):
+            if k in layers:
+                mom_layer = layers[k] if isinstance(layers[k], dict) else {}
+                break
+
+    session_str = get_active_session(datetime.utcnow().hour)
+
+    iron_patterns = ref.get("signals", [])
+    if divergence != "None":
+        iron_patterns = list(iron_patterns) + [divergence]
+
+    return {
+        "current_price":   price,
+        "session":         session_str,
+        # BB (H-5)
+        "bb_score":        bb_result.get("bb_score", 0),
+        "bb_reasons":      bb_result.get("bb_reasons", []),
+        "bb_4h_dir":       bb_result.get("bb_4h_dir", "FLAT"),
+        "bb_15m_dir":      bb_result.get("bb_15m_dir", "FLAT"),
+        "bb_d1_dir":       "N/A",
+        "squeeze_released": bb_result.get("squeeze_released", False),
+        # ATR / ボラ (H-8 / L-3)
+        "atr_1h":          atr_1h,
+        "vol_regime":      vol_result.get("regime", "NORMAL"),
+        "vol_ratio":       vol_result.get("ratio", 1.0),
+        # Momentum
+        "macd_sync":       mom_layer.get("sync_direction", ref.get("signals", [None])[0] if ref.get("signals") else "N/A"),
+        "hist_h1":         mom_layer.get("hist_h1", 0),
+        "hist_15m":        mom_layer.get("hist_15m", 0),
+        "band_walk":       any("バンドウォーク" in str(s) for s in iron_patterns),
+        "rsi_15m":         mom_layer.get("rsi_15m", ref.get("rsi", 50)),
+        "rsi_1h":          mom_layer.get("rsi_1h", ref.get("rsi", 50)),
+        "rsi_state":       mom_layer.get("rsi_state", "NEUTRAL"),
+        # Environment
+        "env_trend":       "N/A",
+        "dow_trend":       "N/A",
+        "sma200_pos":      "N/A",
+        # Trigger
+        "pa_trigger":      next((s for s in iron_patterns if "ピンバー" in str(s) or "包み足" in str(s)), "None"),
+        "iron_patterns":   iron_patterns,
+        "key_levels":      key_levels,
+        # Fundamentals
+        "funda_dir":       "NEUTRAL",
+        "funda_reason":    "マクロデータ参照中",
+        "fear_greed":      fear_greed_str,
+        "is_iron_clad":    any("IronClad" in str(s) or "鉄板" in str(s) for s in iron_patterns),
+    }
+
+
 # ─── コア分析（blocking） ───────────────────────────────────────
 def _analyze_symbol_blocking(sym: str) -> dict:
-    results = {}
+    results  = {}
+    df_store = {}   # H-7: DFを保持してengine_signals構築に使う
     for tf in TIMEFRAMES:
         try:
             df = fetcher.get_analysis_df(sym, tf)
             if df is None or df.empty or len(df) < 30: continue
+            df_store[tf] = df   # H-7: 保存
             bars = len(df)
 
             v6 = {}
@@ -373,6 +494,13 @@ def _analyze_symbol_blocking(sym: str) -> dict:
         price = ref.get("price", 0)
         if price: price_cache[sym] = price
 
+    # H-7: engine_signals を構築してresultsに付加
+    if results and df_store:
+        try:
+            results["_engine_signals"] = _build_engine_signals(sym, results, df_store)
+        except Exception as e:
+            print(f"[EngineSignals] {sym}: {e}")
+
     return results
 
 
@@ -421,66 +549,79 @@ async def estimation_loop():
                         tf: tf_results[tf]["data_bars"] for tf in tf_results
                     }
 
-                    # AI分析
+                    # AI分析 (H-7: engine_signals を渡す)
                     if _needs_ai(sym) and _can_gemini():
                         _record_gemini()
                         last_ai_call[sym] = time.time()
-                        feedback = _get_feedback(sym)
-                        v6_prompt = tf_results.get(ANALYSIS_TF, {}).get("gemini_prompt")
+                        # H-1: スコア変化追跡
+                        ref_score = tf_results.get(ANALYSIS_TF, {}).get("score", 0)
+                        last_ai_score[sym] = ref_score
+
+                        feedback      = _get_feedback(sym)
+                        v6_prompt     = tf_results.get(ANALYSIS_TF, {}).get("gemini_prompt")
+                        engine_signals = tf_results.get("_engine_signals")
+
                         ai_data = ai_analyzer.analyze_single(
                             sym, {"mtf": tf_results},
                             feedback=feedback,
                             gemini_prompt_override=v6_prompt,
+                            engine_signals=engine_signals,
                         )
                         if ai_data:
                             for tf in TIMEFRAMES:
                                 system_state[sym][tf].update({
-                                    "ai_text":     ai_data.get("ai_text", ""),
-                                    "basis":       ai_data.get("basis", ""),
-                                    "probability": ai_data.get("probability", 0),
-                                    "direction":   ai_data.get("direction", "WAIT"),
-                                    "entry":       ai_data.get("entry") or system_state[sym][tf].get("entry", 0),
-                                    "tp1":         ai_data.get("tp1") or system_state[sym][tf].get("tp1", 0),
-                                    "tp2":         ai_data.get("tp2") or system_state[sym][tf].get("tp2", 0),
-                                    "sl":          ai_data.get("sl") or system_state[sym][tf].get("sl", 0),
-                                    "time_window": ai_data.get("time_window", {}),
+                                    "ai_text":        ai_data.get("ai_text", ""),
+                                    "basis":          ai_data.get("basis", ""),
+                                    "probability":    ai_data.get("probability", 0),
+                                    "direction":      ai_data.get("direction", "WAIT"),
+                                    "entry":          ai_data.get("entry") or system_state[sym][tf].get("entry", 0),
+                                    "tp1":            ai_data.get("tp1") or system_state[sym][tf].get("tp1", 0),
+                                    "tp2":            ai_data.get("tp2") or system_state[sym][tf].get("tp2", 0),
+                                    "sl":             ai_data.get("sl") or system_state[sym][tf].get("sl", 0),
+                                    "time_window":    ai_data.get("time_window", {}),
                                     "hold_time_minutes": ai_data.get("hold_time_minutes", 0),
-                                    "cached":      ai_data.get("cached", False),
-                                    "last_updated": datetime.now().isoformat(),
+                                    "signal_quality": ai_data.get("signal_quality", "LOW"),
+                                    "should_notify":  ai_data.get("should_notify", False),
+                                    "rr_ratio":       ai_data.get("rr_ratio"),
+                                    "cached":         ai_data.get("cached", False),
+                                    "last_updated":   datetime.now().isoformat(),
                                 })
                             ref_state = system_state[sym][ANALYSIS_TF]
-                            db.save_prediction({
-                                "symbol":        sym,
-                                "timeframe":     ANALYSIS_TF,
-                                "status":        ref_state.get("status", "Wait"),
-                                "score":         ref_state.get("score", 0),
-                                "ai_text":       ai_data.get("ai_text", ""),
-                                "entry":         ai_data.get("entry") or 0,
-                                "tp1":           ai_data.get("tp1") or 0,
-                                "tp2":           ai_data.get("tp2") or 0,
-                                "sl":            ai_data.get("sl") or 0,
-                                "probability":   ai_data.get("probability", 0),
-                                "current_price": price_cache.get(sym, 0),
-                                "layers":        ref_state.get("layers", {}),
-                                "aligned":       ref_state.get("aligned", 0),
-                                "session":       ref_state.get("session", "off"),
-                            })
+                            score = ref_state.get("score", 0)
+
+                            # M-7: スコア60以上 or should_notify の場合のみDB保存
+                            if abs(score) >= 60 or ai_data.get("should_notify"):
+                                db.save_prediction({
+                                    "symbol":        sym,
+                                    "timeframe":     ANALYSIS_TF,
+                                    "status":        ref_state.get("status", "Wait"),
+                                    "score":         score,
+                                    "ai_text":       ai_data.get("ai_text", ""),
+                                    "entry":         ai_data.get("entry") or 0,
+                                    "tp1":           ai_data.get("tp1") or 0,
+                                    "tp2":           ai_data.get("tp2") or 0,
+                                    "sl":            ai_data.get("sl") or 0,
+                                    "probability":   ai_data.get("probability", 0),
+                                    "current_price": price_cache.get(sym, 0),
+                                    "layers":        ref_state.get("layers", {}),
+                                    "aligned":       ref_state.get("aligned", 0),
+                                    "session":       ref_state.get("session", "off"),
+                                })
+
                             if market_overview["last_update_ts"] < time.time() - 120:
                                 market_overview["global_theme"] = ai_data.get("ai_text","")[:80] + "..."
                                 market_overview["last_update_ts"] = int(time.time())
 
-                            # 通知判定: confidence>=75% or (score>=35 & prob>=80 & aligned>=3)
-                            score = ref_state.get("score", 0)
-                            prob  = ai_data.get("probability", 0)
-                            algn  = ref_state.get("aligned", 0)
-                            conf  = ai_data.get("confidence", "LOW")
-                            is_locked = _check_daily_lock()
-                            if not is_locked and (
-                                (conf == "HIGH" and prob >= 75) or
-                                (abs(score) >= 35 and prob >= 80 and algn >= 3)
-                            ):
+                            # H-9: スコア閾値 or AI主導通知
+                            prob         = ai_data.get("probability", 0)
+                            should_notify = ai_data.get("should_notify", False)
+                            is_locked    = _check_daily_lock()
+                            score_threshold = abs(score) >= 80 or prob >= 80
+                            if not is_locked and (score_threshold or should_notify):
                                 try:
-                                    notifier.notify(sym, ref_state, ai_data)
+                                    notifier.notify_if_needed(
+                                        sym, None, ai_data, price_cache.get(sym, 0)
+                                    )
                                 except Exception: pass
 
                         await asyncio.sleep(15)

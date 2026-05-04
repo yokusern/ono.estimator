@@ -1,22 +1,11 @@
 """
-Step B1: Discord 通知の完全自動化
-- Step 8 の強化トリガー条件（スコア±35以上 & 利確率80%以上 & MTF 2/3以上 & 4時間制限 & イベント抑制）
-- Step 8 の Discord メッセージフォーマット（Entry/TP1/TP2/SL/セッション表示）
-- 通知履歴を Supabase で管理し、同銘柄4時間以内の連投を防止
-
-Supabase に手動実行が必要な SQL:
-  create table if not exists notification_logs (
-    id uuid primary key default gen_random_uuid(),
-    symbol text,
-    direction text,
-    score float,
-    notified_at timestamptz default now()
-  );
+Notifier — H-4: シグナルキーデバウンス（時間制限なし、同一シグナルのみ防止）
+           H-9: AI主導通知バッジ（🟢HIGH / 🟡MEDIUM / 🔵AI JUDGMENT CALL）
 """
 import os
 import logging
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -37,7 +26,19 @@ class Notifier:
         )
         self.line_token = os.environ.get("LINE_NOTIFY_TOKEN")
         self.session = requests.Session()
-        self._local_log: dict = {}  # DB 不使用時のローカル4時間制限
+        # H-4: シグナルキーベースのデバウンス（時間制限なし）
+        self._last_signal_key: dict = {}
+
+    # ─── H-4: シグナルキー生成 ─────────────────────────────────
+    def _make_signal_key(self, symbol: str, direction: str, price: float) -> str:
+        """銘柄の価格精度に合わせてキーを生成する。同一価格帯・方向の連続発火を防ぐ。"""
+        rounding = {
+            "USDJPY=X": 2, "AUDJPY=X": 2, "EURUSD=X": 4,
+            "EURJPY=X": 2, "GC=F": 0, "SI=F": 2,
+            "BTC-USD": -2, "^N225": 0
+        }
+        r = rounding.get(symbol, 2)
+        return f"{symbol}_{direction}_{round(price, r)}"
 
     # ─── 通知判定 ─────────────────────────────────────────────
     def notify_if_needed(
@@ -49,62 +50,52 @@ class Notifier:
         session: str = "off",
         event_risk: dict = None,
     ):
-        """Step 8 の AND 条件で通知判定"""
-        score = getattr(result, "win_rate_score", 0) if result else ai_data.get("probability", 0)
-        direction = ai_data.get("direction", "WAIT")
-        probability = ai_data.get("probability", 0)
+        """H-9: スコア閾値 or AI主導(should_notify=true)で通知"""
+        direction      = ai_data.get("direction", "WAIT")
+        probability    = ai_data.get("probability", 0)
+        signal_quality = ai_data.get("signal_quality", ai_data.get("confidence", "LOW"))
+        should_notify  = ai_data.get("should_notify", False)
+        score = getattr(result, "win_rate_score", 0) if result else 0
 
-        # 条件1: スコア or 利確率
-        if abs(score) < 35 and probability < 80:
+        # WAIT かつ AI も通知不要なら終了
+        if direction == "WAIT" and not should_notify:
             return
 
-        # 条件2: 利確率 80%以上
-        if probability < 80:
-            return
-
-        # 条件3: 重要指標 2時間以内は通知抑制
+        # 重要指標2時間以内は抑制
         if event_risk and event_risk.get("critical"):
             logger.info(f"[Notifier] {symbol} suppressed: event within 2h")
             return
 
-        # 条件4: 4時間以内の連投防止
-        if self._notified_recently(symbol):
+        # H-4: 同一シグナルキーならスキップ（時間制限なし）
+        sig_key = self._make_signal_key(symbol, direction, current_price)
+        if self._last_signal_key.get(symbol) == sig_key:
             return
+        self._last_signal_key[symbol] = sig_key
 
-        # 通知実行
+        # H-9: バッジ選択
+        if signal_quality == "HIGH" and probability >= 75:
+            badge = "🟢 HIGH QUALITY SIGNAL"
+        elif signal_quality == "MEDIUM" or probability >= 65:
+            badge = "🟡 MEDIUM QUALITY SIGNAL"
+        elif should_notify:
+            badge = "🔵 AI JUDGMENT CALL"
+        else:
+            badge = "⚪ SIGNAL"
+
+        ai_data_aug = {**ai_data, "_badge": badge}
+
         if self.line_token:
-            self._send_line(symbol, score, ai_data, current_price, session)
+            self._send_line(symbol, score, ai_data_aug, current_price, session)
 
         systems = result.base_system.split(",") if hasattr(result, "base_system") else ["AI"]
         for sys_name in systems:
             webhook = self.webhooks.get(sys_name) or self.default_webhook
             if webhook:
-                self._send_discord(webhook, symbol, sys_name, score, ai_data, current_price, session)
+                self._send_discord(webhook, symbol, sys_name, score, ai_data_aug, current_price, session)
 
         self._log_notification(symbol, direction, score)
 
-    def _notified_recently(self, symbol: str) -> bool:
-        """4時間以内に同銘柄への通知があれば True"""
-        cutoff = datetime.now() - timedelta(hours=4)
-
-        # Supabase から確認
-        if self.db and self.db.client:
-            try:
-                res = self.db.client.table("notification_logs")\
-                    .select("notified_at")\
-                    .eq("symbol", symbol)\
-                    .gte("notified_at", cutoff.isoformat())\
-                    .limit(1).execute()
-                return len(res.data) > 0
-            except Exception:
-                pass
-
-        # ローカルフォールバック
-        last = self._local_log.get(symbol)
-        return bool(last and (datetime.now() - last) < timedelta(hours=4))
-
     def _log_notification(self, symbol: str, direction: str, score: float):
-        self._local_log[symbol] = datetime.now()
         if self.db and self.db.client:
             try:
                 self.db.client.table("notification_logs").insert({
@@ -127,43 +118,46 @@ class Notifier:
         current_price: float,
         session: str = "off",
     ):
-        direction = ai_data.get("direction", "WAIT")
-        probability = ai_data.get("probability", 0)
-        entry = ai_data.get("entry") or ai_data.get("predicted_price", "---")
-        tp1 = ai_data.get("tp1", "---")
-        tp2 = ai_data.get("tp2", "---")
-        sl = ai_data.get("sl", "---")
-        hold_min = ai_data.get("hold_time_minutes", "---")
-        basis = ai_data.get("basis", ai_data.get("ai_text", "")[:80])
-        confidence = ai_data.get("confidence", "LOW")
-        cached = ai_data.get("cached", False)
-        event_msg = ai_data.get("event_message", "なし")
+        direction      = ai_data.get("direction", "WAIT")
+        probability    = ai_data.get("probability", 0)
+        entry          = ai_data.get("entry") or ai_data.get("entry_price", "---")
+        tp1            = ai_data.get("tp1") or ai_data.get("tp_price", "---")
+        tp2            = ai_data.get("tp2", "---")
+        sl             = ai_data.get("sl") or ai_data.get("sl_price", "---")
+        rr             = ai_data.get("rr_ratio", "---")
+        signal_quality = ai_data.get("signal_quality", ai_data.get("confidence", "LOW"))
+        badge          = ai_data.get("_badge", "⚪ SIGNAL")
+        cached         = ai_data.get("cached", False)
+        basis          = ai_data.get("basis", "")
+        if not basis:
+            basis = ai_data.get("ai_text", "")[:80]
 
-        dir_icon = "🟢🟢" if direction == "BUY" else "🔴🔴" if direction == "SELL" else "⚪"
-        conf_icon = "⭐⭐⭐" if confidence == "HIGH" else "⭐⭐" if confidence == "MEDIUM" else "⭐"
-        mention = "@everyone" if score >= 90 else ""
+        dir_icon  = "🟢🟢" if direction == "BUY" else "🔴🔴" if direction == "SELL" else "⚪"
+        sq_icon   = "⭐⭐⭐" if signal_quality == "HIGH" else "⭐⭐" if signal_quality == "MEDIUM" else "⭐"
+        mention   = "@everyone" if probability >= 85 else ""
 
-        from .session_filter import SESSION_LABELS
-        session_label = SESSION_LABELS.get(session, session)
+        try:
+            from .session_filter import SESSION_LABELS
+            session_label = SESSION_LABELS.get(session, session)
+        except Exception:
+            session_label = session
         multiplier = ai_data.get("session_multiplier", 1.0)
 
-        hold_label = f"約{hold_min}分" if isinstance(hold_min, int) else "---"
+        rr_str = f"{rr:.2f}" if isinstance(rr, float) else str(rr)
 
         description = (
             f"```\n"
+            f"{badge}\n"
             f"{dir_icon} {direction} — {symbol} {mention}\n"
             f"{'━' * 35}\n"
-            f"📊 スコア: {score} | 利確率: {probability}% | {conf_icon}\n"
-            f"📐 Entry: {entry} | TP1: {tp1} | TP2: {tp2} | SL: {sl}\n"
-            f"⏱ 推奨保有時間: {hold_label}\n"
-            f"🕘 {session_label}（補正倍率 ×{multiplier}）\n"
-            f"⚡ 根拠: {basis[:80]}\n"
-            f"⚠️ イベントリスク: {event_msg}\n"
+            f"📊 確率: {probability}% | {sq_icon} {signal_quality}\n"
+            f"📐 Entry: {entry} | TP: {tp1} | TP2: {tp2} | SL: {sl} | RR: {rr_str}\n"
+            f"🕘 {session_label}（×{multiplier}）\n"
+            f"⚡ {basis[:80]}\n"
             f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M JST')}\n"
             f"{'━' * 35}\n"
             f"```"
         )
-
         if cached:
             description += "\n🕐 *キャッシュデータ使用中*"
 
@@ -173,7 +167,7 @@ class Notifier:
             "embeds": [{
                 "description": description,
                 "color": color,
-                "footer": {"text": "ONO Estimator Ultra v6.0"},
+                "footer": {"text": "ONO Estimator Ultra v6.2"},
             }],
         }
         try:
@@ -183,17 +177,19 @@ class Notifier:
 
     # ─── LINE 送信 ────────────────────────────────────────────
     def _send_line(self, symbol: str, score: float, ai_data: dict, price: float, session: str):
-        prob = ai_data.get("probability", "---")
-        entry = ai_data.get("entry", "---")
-        tp1 = ai_data.get("tp1", "---")
-        sl = ai_data.get("sl", "---")
+        prob   = ai_data.get("probability", "---")
+        entry  = ai_data.get("entry") or ai_data.get("entry_price", "---")
+        tp1    = ai_data.get("tp1") or ai_data.get("tp_price", "---")
+        sl     = ai_data.get("sl") or ai_data.get("sl_price", "---")
+        badge  = ai_data.get("_badge", "")
+        basis  = ai_data.get("basis", ai_data.get("ai_text", ""))[:100]
         message = (
-            f"\n【ONO Alert】{symbol}\n"
+            f"\n{badge}\n【ONO Alert】{symbol}\n"
             f"方向: {ai_data.get('direction', 'WAIT')}\n"
             f"現在値: {price:.3f}\n"
-            f"スコア: {score} / 利確率: {prob}%\n"
-            f"Entry: {entry} TP1: {tp1} SL: {sl}\n"
-            f"{ai_data.get('basis', '')[:100]}"
+            f"確率: {prob}%\n"
+            f"Entry: {entry} TP: {tp1} SL: {sl}\n"
+            f"{basis}"
         )
         try:
             self.session.post(
