@@ -6,8 +6,10 @@ import dynamic from "next/dynamic";
 import {
   TrendingUp, TrendingDown, Minus, Zap, Shield, Brain, BarChart3, Activity,
   Target, AlertTriangle, Clock, Globe, RefreshCw, ChevronRight, Wifi, WifiOff,
-  Bell, Trophy, BarChart2, Layers, Radio, Crosshair, Eye, Info
+  Bell, Trophy, BarChart2, Layers, Radio, Crosshair, Eye, Info,
+  BarChart, History, Cpu
 } from "lucide-react";
+import { useWindowSize } from "../hooks/useWindowSize";
 
 const TradingViewChart = dynamic(() => import("./TradingViewChart"), { ssr: false });
 
@@ -76,6 +78,16 @@ const dirGlow = (d: string) => {
 };
 const scoreToColor = (s: number) =>
   s >= 70 ? "#22d3ee" : s >= 50 ? "#a78bfa" : s >= 30 ? "#f59e0b" : "#fb7185";
+
+// ─── 4-2: 相対時刻ヘルパー ────────────────────────────────────
+function relativeTime(isoStr?: string | null): { text: string; color: string } {
+  if (!isoStr) return { text: "---", color: "#475569" };
+  const diff = Math.floor((Date.now() - new Date(isoStr).getTime()) / 1000);
+  if (diff < 60)   return { text: `${diff}秒前`,   color: "#34d399" };
+  if (diff < 600)  return { text: `${Math.floor(diff/60)}分前`, color: "#34d399" };
+  if (diff < 1800) return { text: `${Math.floor(diff/60)}分前`, color: "#f59e0b" };
+  return { text: `${Math.floor(diff/60)}分前`, color: "#fb7185" };
+}
 
 // ─── Clock ────────────────────────────────────────────────────
 function LiveClock() {
@@ -348,7 +360,7 @@ function ThinkingProcessCard({ d, symbol }: { d: any; symbol: string }) {
             <tr key={i} style={{
               borderBottom: i < rows.length - 1 ? "1px solid rgba(255,255,255,0.05)" : "none",
             }}>
-              <td style={{ padding: "9px 8px 9px 0", width: 110, verticalAlign: "top" }}>
+              <td style={{ padding: "9px 8px 9px 0", width: 80, verticalAlign: "top" }}>
                 <div style={{ fontSize: 11, color: "#64748b" }}>{row.icon} {row.label}</div>
               </td>
               <td style={{ padding: "9px 0", verticalAlign: "top" }}>
@@ -566,7 +578,8 @@ export default function Dashboard() {
   const [margin, setMargin] = useState("1000000");
   const [session, setSession] = useState(getCurrentSession());
   const [showInfo, setShowInfo] = useState(false);
-  const [showAnalysisDetail, setShowAnalysisDetail] = useState(false); // A-1: 詳細折りたたみ
+  const [showAnalysisDetail, setShowAnalysisDetail] = useState(false);
+  const { isMobile, isTablet } = useWindowSize(); // 6-8
 
   // URLパラメータ ?debug=1 でデバッグタブを有効化
   useEffect(() => {
@@ -797,61 +810,126 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* ─── Tabs ── */}
-      <div style={{
-        background: "rgba(2,6,23,0.6)", backdropFilter: "blur(10px)",
-        borderBottom: "1px solid rgba(255,255,255,0.06)",
-        padding: "0 24px", display: "flex", gap: 4,
-      }}>
-        {([
-          { id: "main",    label: "シグナル",  icon: <Crosshair size={14} /> },
-          { id: "multi",   label: "全銘柄",    icon: <Globe size={14} /> },
-          { id: "history", label: "パフォーマンス", icon: <Trophy size={14} /> },
-          { id: "ai",      label: "AI分析",    icon: <Brain size={14} /> },
-          { id: "demo",    label: "デモ売買",  icon: <Target size={14} /> },
-          { id: "debug",   label: "診断",      icon: <Activity size={14} /> },
-        ] as const).map(({ id, label, icon }) => (
-          <button key={id} onClick={() => setActiveTab(id)} style={{
-            background: activeTab === id ? "rgba(34,211,238,0.1)" : "transparent",
-            border: "none", borderBottom: activeTab === id ? "2px solid #22d3ee" : "2px solid transparent",
-            color: activeTab === id ? "#22d3ee" : "#64748b",
-            padding: "12px 16px", cursor: "pointer", fontSize: 13, fontWeight: 600,
-            display: "flex", alignItems: "center", gap: 7, transition: "all 0.2s",
-          }}>
-            {icon}{label}
-          </button>
-        ))}
-      </div>
+      {/* ─── Tabs (desktop) ── */}
+      {!isMobile && (
+        <div style={{
+          background: "rgba(2,6,23,0.6)", backdropFilter: "blur(10px)",
+          borderBottom: "1px solid rgba(255,255,255,0.06)",
+          padding: "0 24px", display: "flex", gap: 4,
+        }}>
+          {([
+            { id: "main",    label: "シグナル",  icon: <Crosshair size={14} /> },
+            { id: "multi",   label: "全銘柄",    icon: <Globe size={14} /> },
+            { id: "history", label: "パフォーマンス", icon: <Trophy size={14} /> },
+            { id: "ai",      label: "AI分析",    icon: <Brain size={14} /> },
+            { id: "demo",    label: "デモ売買",  icon: <Target size={14} /> },
+            { id: "debug",   label: "診断",      icon: <Activity size={14} /> },
+          ] as const).map(({ id, label, icon }) => (
+            <button key={id} onClick={() => setActiveTab(id)} style={{
+              background: activeTab === id ? "rgba(34,211,238,0.1)" : "transparent",
+              border: "none", borderBottom: activeTab === id ? "2px solid #22d3ee" : "2px solid transparent",
+              color: activeTab === id ? "#22d3ee" : "#64748b",
+              padding: "12px 16px", cursor: "pointer", fontSize: 13, fontWeight: 600,
+              display: "flex", alignItems: "center", gap: 7, transition: "all 0.2s",
+            }}>
+              {icon}{label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* 6-5: Mobile bottom navigation */}
+      {isMobile && (
+        <nav style={{
+          position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 200,
+          background: "rgba(2,6,23,0.95)", backdropFilter: "blur(20px)",
+          borderTop: "1px solid rgba(255,255,255,0.08)",
+          height: 60, display: "flex", alignItems: "stretch",
+        }}>
+          {([
+            { id: "main",    label: "シグナル", icon: <Crosshair size={18} /> },
+            { id: "multi",   label: "全銘柄",   icon: <Globe size={18} /> },
+            { id: "history", label: "成績",     icon: <Trophy size={18} /> },
+            { id: "ai",      label: "AI",       icon: <Brain size={18} /> },
+            { id: "demo",    label: "デモ",     icon: <Target size={18} /> },
+          ] as const).map(({ id, label, icon }) => (
+            <button key={id} onClick={() => setActiveTab(id)} style={{
+              flex: 1, background: "transparent", border: "none",
+              display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3,
+              color: activeTab === id ? "#22d3ee" : "#475569", cursor: "pointer",
+              borderTop: activeTab === id ? "2px solid #22d3ee" : "2px solid transparent",
+              transition: "all 0.2s",
+            }}>
+              {icon}
+              <span style={{ fontSize: 9, fontWeight: 600 }}>{label}</span>
+            </button>
+          ))}
+        </nav>
+      )}
 
       {/* ─── Main Content ── */}
-      <div style={{ maxWidth: 1600, margin: "0 auto", padding: "20px 24px" }}>
+      <div style={{ maxWidth: 1600, margin: "0 auto", padding: isMobile ? "12px 12px 80px" : "20px 24px" }}>
 
         {/* ══════════ TAB: MAIN ══════════ */}
         {activeTab === "main" && (
-          <div style={{ display: "grid", gridTemplateColumns: "280px 1fr 300px", gap: 20 }}>
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: isMobile ? "1fr" : isTablet ? "1fr 1fr" : "280px 1fr 300px",
+            gap: isMobile ? 12 : 20,
+          }}>
 
             {/* LEFT: Symbol selector */}
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              {/* Symbol list */}
+              {/* 6-2: Symbol tabs — mobile=horizontal scroll, desktop=vertical */}
               <div style={{
                 background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
-                borderRadius: 16, padding: 16,
+                borderRadius: 16, padding: isMobile ? "10px 12px" : 16,
               }}>
-                <div style={{ fontSize: 11, color: "#64748b", letterSpacing: 1, marginBottom: 12, textTransform: "uppercase" }}>
+                <div style={{ fontSize: 11, color: "#64748b", letterSpacing: 1, marginBottom: 10, textTransform: "uppercase" }}>
                   銘柄選択
                 </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {SYMBOLS.map(sym => (
-                    <AssetCard key={sym} symbol={sym} d={allData[sym]} onClick={() => setActiveSymbol(sym)} active={activeSymbol === sym} />
-                  ))}
-                </div>
+                {isMobile ? (
+                  <div style={{
+                    display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4,
+                    WebkitOverflowScrolling: "touch", scrollbarWidth: "none",
+                  }}>
+                    {SYMBOLS.map(sym => {
+                      const d2 = allData[sym];
+                      const dir2 = d2?.status || d2?.direction || "WAIT";
+                      const col2 = dirColor(dir2);
+                      const isAct = activeSymbol === sym;
+                      return (
+                        <button key={sym} onClick={() => setActiveSymbol(sym)} style={{
+                          flexShrink: 0,
+                          background: isAct ? dirBg(dir2) : "rgba(255,255,255,0.04)",
+                          border: `1px solid ${isAct ? dirBorder(dir2) : "rgba(255,255,255,0.08)"}`,
+                          borderRadius: 10, padding: "8px 12px", cursor: "pointer",
+                          textAlign: "center", minWidth: 72,
+                        }}>
+                          <div style={{ fontSize: 10, fontWeight: 700, color: isAct ? col2 : "#94a3b8" }}>
+                            {SYMBOL_DISPLAY[sym]?.split("/")?.[0] || sym}
+                          </div>
+                          <div style={{ fontSize: 9, color: col2, marginTop: 2 }}>
+                            {dir2.includes("BUY") ? "▲" : dir2.includes("SELL") ? "▼" : "─"}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {SYMBOLS.map(sym => (
+                      <AssetCard key={sym} symbol={sym} d={allData[sym]} onClick={() => setActiveSymbol(sym)} active={activeSymbol === sym} />
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
 
             {/* CENTER */}
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
               {/* TF selector */}
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                 <span style={{ fontSize: 12, color: "#64748b" }}>時間足:</span>
                 {TIMEFRAMES.map(tf => (
                   <button key={tf} onClick={() => setActiveTF(tf)} style={{
@@ -862,8 +940,17 @@ export default function Dashboard() {
                     cursor: "pointer", fontSize: 12, fontWeight: 600, transition: "all 0.2s",
                   }}>{tf}</button>
                 ))}
-                <div style={{ marginLeft: "auto", fontSize: 12, color: "#4b5563" }}>
-                  {SYMBOL_DISPLAY[activeSymbol]}
+                <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
+                  {/* 4-2: 最終更新の相対時刻 */}
+                  {(() => {
+                    const rt = relativeTime(current?.last_updated);
+                    return (
+                      <span style={{ fontSize: 11, color: rt.color, fontFamily: "monospace" }}>
+                        ⏱ {rt.text}
+                      </span>
+                    );
+                  })()}
+                  <span style={{ fontSize: 12, color: "#4b5563" }}>{SYMBOL_DISPLAY[activeSymbol]}</span>
                 </div>
               </div>
 
@@ -875,10 +962,11 @@ export default function Dashboard() {
                 confidence={confidence} isLoading={isLoading}
               />
 
-              {/* Chart */}
+              {/* 6-3: Chart — height responsive */}
               <div style={{
                 background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
-                borderRadius: 16, overflow: "hidden", height: 320,
+                borderRadius: 16, overflow: "hidden",
+                height: isMobile ? 220 : isTablet ? 300 : 320,
               }}>
                 {chartData.length > 0 ? (
                   <TradingViewChart data={chartData} symbol={activeSymbol} />
@@ -1013,6 +1101,7 @@ export default function Dashboard() {
                   <input
                     value={margin}
                     onChange={e => setMargin(e.target.value)}
+                    inputMode="numeric"
                     style={{
                       width: "100%", background: "rgba(255,255,255,0.06)",
                       border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8,
@@ -1053,7 +1142,7 @@ export default function Dashboard() {
             <div style={{ fontSize: 20, fontWeight: 800, color: "#f1f5f9", marginBottom: 16 }}>
               全銘柄 スキャン
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: 16 }}>
+            <div style={{ display: "grid", gridTemplateColumns: `repeat(auto-fill, minmax(${isMobile ? 160 : 340}px, 1fr))`, gap: isMobile ? 10 : 16 }}>
               {SYMBOLS.map(sym => {
                 const d = allData[sym] || overview[sym] || {};
                 const dir = d.status || d.direction || "WAIT";

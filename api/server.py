@@ -16,7 +16,7 @@ from typing import Optional
 import requests
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 from dotenv import load_dotenv
 
 # ─── Core modules ──────────────────────────────────────────────
@@ -148,6 +148,10 @@ _gemini_times: deque = deque(maxlen=60)
 _startup_done = False
 # D-1: 通知ログ（直近20件のインメモリキャッシュ）
 _notification_log: deque = deque(maxlen=20)
+# 3-5: system_state 書き込みロック
+system_state_lock: asyncio.Lock = None  # startup後に初期化
+# 3-1: anti_sleep失敗カウンター
+_anti_sleep_fail_count = 0
 
 # ─── L-2: Correlation Guard ────────────────────────────────────
 _CORR_GROUPS = {
@@ -268,7 +272,7 @@ def _needs_ai(sym: str) -> bool:
 def _can_gemini() -> bool:
     now = time.time()
     while _gemini_times and now - _gemini_times[0] > 60: _gemini_times.popleft()
-    return len(_gemini_times) < 3
+    return len(_gemini_times) < 2  # 1-4: MAX_GEMINI 3→2
 
 def _record_gemini(): _gemini_times.append(time.time())
 
@@ -837,7 +841,9 @@ def _build_engine_signals(sym: str, tf_results: dict, df_store: dict) -> dict:
     # A-3: コードベース Liquidity Sweep 検出
     try:
         from ono_estimator.filters.liquidity_sweep import detect_liquidity_sweep as _dls
-        _ls_df = df_store.get("5m") or df_store.get("1m") or df1h
+        # 1-1: DataFrame の or チェーンは ambiguous エラーになるため explicit に
+        _ls_df = df_store.get("5m") if df_store.get("5m") is not None else (
+                 df_store.get("1m") if df_store.get("1m") is not None else df1h)
         if _ls_df is not None and len(_ls_df) >= 22:
             _ls = _dls(_ls_df)
             _signals["ls_detected"]  = _ls["detected"]
@@ -862,7 +868,9 @@ def _build_engine_signals(sym: str, tf_results: dict, df_store: dict) -> dict:
     # C-1: コードベース エントリータイプ検出
     try:
         from ono_estimator.filters.entry_type_detector import detect_entry_type as _det
-        _et_df = df_store.get("5m") or df_store.get("1m") or df1h
+        # 1-1: DataFrame の or チェーンは ambiguous エラーになるため explicit に
+        _et_df = df_store.get("5m") if df_store.get("5m") is not None else (
+                 df_store.get("1m") if df_store.get("1m") is not None else df1h)
         _hs_pat = next((p for p in iron_patterns if "HeadAndShoulders" in str(p)), "なし")
         _detected_et = _det(_et_df, key_levels, _hs_pat)
         _signals["detected_entry_type"] = _detected_et
@@ -1038,9 +1046,10 @@ async def fast_loop():
                     tf_results = await loop.run_in_executor(None, _analyze_symbol_blocking, sym)
                     if not tf_results:
                         continue
-                    for tf, summary in tf_results.items():
-                        if tf in TIMEFRAMES:
-                            system_state[sym][tf].update(summary)
+                    async with system_state_lock:
+                        for tf, summary in tf_results.items():
+                            if tf in TIMEFRAMES:
+                                system_state[sym][tf].update(summary)
                     market_overview["data_summary"][sym] = {
                         tf: tf_results[tf]["data_bars"]
                         for tf in tf_results
@@ -1103,13 +1112,16 @@ async def ai_loop():
                     )
                 )
                 if not ai_data:
-                    # 0-1: 失敗時もlast_ai_callを更新して無限スキップを防止
-                    last_ai_call[sym] = time.time()
-                    # APIキー未設定の場合は状態に明示
-                    if not os.environ.get("GEMINI_API_KEY"):
-                        for tf in TIMEFRAMES:
-                            system_state[sym][tf]["ai_text"] = "APIキー未設定のためAI分析は無効です"
-                    await asyncio.sleep(15)
+                    # 1-2: ALL KEYS EXHAUSTED → reset to force retry; show warning
+                    last_ai_call[sym] = 0
+                    async with system_state_lock:
+                        if not os.environ.get("GEMINI_API_KEY"):
+                            for tf in TIMEFRAMES:
+                                system_state[sym][tf]["ai_text"] = "APIキー未設定のためAI分析は無効です"
+                        else:
+                            for tf in TIMEFRAMES:
+                                system_state[sym][tf]["ai_text"] = "⚠️ AI分析データ更新中（Gemini一時停止中）"
+                    await asyncio.sleep(20)  # 1-4: 15→20s
                     continue
 
                 # 後方互換正規化
@@ -1119,31 +1131,32 @@ async def ai_loop():
                 ai_data.setdefault("direction", "WAIT")
                 ai_data.setdefault("basis",  (ai_data.get("ai_text") or "")[:80])
 
-                # system_state 更新（全TF）— スキャルピングフィールドも含む
-                for tf in TIMEFRAMES:
-                    system_state[sym][tf].update({
-                        "ai_text":        ai_data.get("ai_text", ""),
-                        "awareness_text": ai_data.get("awareness_text", ""),
-                        "basis":          ai_data.get("basis", ""),
-                        "probability":    ai_data.get("probability", 0),
-                        "direction":      ai_data.get("direction", "WAIT"),
-                        "entry":          ai_data.get("entry") or system_state[sym][tf].get("entry", 0),
-                        "tp1":            ai_data.get("tp1") or system_state[sym][tf].get("tp1", 0),
-                        "tp2":            ai_data.get("tp2") or system_state[sym][tf].get("tp2", 0),
-                        "sl":             ai_data.get("sl") or system_state[sym][tf].get("sl", 0),
-                        "signal_quality": ai_data.get("signal_quality", ai_data.get("confidence", "LOW")),
-                        "should_notify":  ai_data.get("should_notify", False),
-                        "rr_ratio":       ai_data.get("rr_ratio"),
-                        "cached":         False,
-                        "last_updated":   datetime.now().isoformat(),
-                        # スキャルピング特化フィールド（フロント表示用）
-                        "is_range":       ai_data.get("is_range", False),
-                        "entry_type":     ai_data.get("entry_type", "NONE"),
-                        "predicted_price": ai_data.get("predicted_price", 0),
-                        "step1_trend":    ai_data.get("step1_trend", ""),
-                        "step2_range":    ai_data.get("step2_range", ""),
-                        "step3_entry_type": ai_data.get("step3_entry_type", ""),
-                    })
+                # 3-5: system_state 更新（全TF）— ロックで排他制御
+                async with system_state_lock:
+                    for tf in TIMEFRAMES:
+                        system_state[sym][tf].update({
+                            "ai_text":        ai_data.get("ai_text", ""),
+                            "awareness_text": ai_data.get("awareness_text", ""),
+                            "basis":          ai_data.get("basis", ""),
+                            "probability":    ai_data.get("probability", 0),
+                            "direction":      ai_data.get("direction", "WAIT"),
+                            "entry":          ai_data.get("entry") or system_state[sym][tf].get("entry", 0),
+                            "tp1":            ai_data.get("tp1") or system_state[sym][tf].get("tp1", 0),
+                            "tp2":            ai_data.get("tp2") or system_state[sym][tf].get("tp2", 0),
+                            "sl":             ai_data.get("sl") or system_state[sym][tf].get("sl", 0),
+                            "signal_quality": ai_data.get("signal_quality", ai_data.get("confidence", "LOW")),
+                            "should_notify":  ai_data.get("should_notify", False),
+                            "rr_ratio":       ai_data.get("rr_ratio"),
+                            "cached":         False,
+                            "last_updated":   datetime.now().isoformat(),
+                            # スキャルピング特化フィールド（フロント表示用）
+                            "is_range":       ai_data.get("is_range", False),
+                            "entry_type":     ai_data.get("entry_type", "NONE"),
+                            "predicted_price": ai_data.get("predicted_price", 0),
+                            "step1_trend":    ai_data.get("step1_trend", ""),
+                            "step2_range":    ai_data.get("step2_range", ""),
+                            "step3_entry_type": ai_data.get("step3_entry_type", ""),
+                        })
 
                 ref_state = system_state[sym][ANALYSIS_TF]
                 score     = ref_state.get("score", 0)
@@ -1301,11 +1314,23 @@ async def scanner_loop():
 
 
 async def anti_sleep_loop():
+    global _anti_sleep_fail_count
     await asyncio.sleep(30)
+    _discord_warn_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
     while True:
         try:
             requests.get(f"{RENDER_URL}/api/health", timeout=10)
-        except Exception: pass
+            _anti_sleep_fail_count = 0
+        except Exception as e:
+            _anti_sleep_fail_count += 1
+            print(f"[AntiSleep] health check failed #{_anti_sleep_fail_count}: {e}")
+            if _anti_sleep_fail_count >= 3 and _discord_warn_url:
+                try:
+                    requests.post(_discord_warn_url, json={
+                        "content": f"⚠️ Render HEALTH CHECK FAILED {_anti_sleep_fail_count}回連続 — サーバーダウンの可能性"
+                    }, timeout=5)
+                    _anti_sleep_fail_count = 0
+                except Exception: pass
         await asyncio.sleep(120)
 
 
@@ -1321,7 +1346,13 @@ async def auto_evaluate_loop():
             evaluated = 0
             losses_this_run = []
 
+            four_hours_ago = (datetime.utcnow() - timedelta(hours=4)).isoformat()
             for row in unscored:
+                # 3-4: 4時間以上前の予測はスキップ（古すぎて信頼性がない）
+                created_at = row.get("created_at", "")
+                if created_at and created_at < four_hours_ago:
+                    continue
+
                 sym_short = row.get("symbol", "")
                 ticker = next((k for k, v in SYM_SHORT.items() if v == sym_short), sym_short)
                 cur_price = price_cache.get(ticker, 0)
@@ -1461,6 +1492,8 @@ async def warmup_loop():
 
 @app.on_event("startup")
 async def startup():
+    global system_state_lock
+    system_state_lock = asyncio.Lock()  # 3-5: 非同期ロック初期化
     asyncio.create_task(warmup_loop())        # 最優先: スピンアップ直後にキャッシュ温め
     asyncio.create_task(fast_loop())          # H-10: 10秒データループ
     asyncio.create_task(ai_loop())            # H-10: 60秒AIループ
@@ -1478,9 +1511,9 @@ def root():
     return {"status": "ONO Estimator Ultra v6.1", "time": datetime.now().isoformat()}
 
 
-@app.get("/api/health")
+@app.api_route("/api/health", methods=["GET", "HEAD"])
 def health():
-    # 超軽量: DB接続なし・即時応答 (Renderスピンアップ監視用)
+    # 1-3: HEAD対応 (Renderスピンアップ監視用・超軽量)
     return {"status": "ok", "ts": int(time.time())}
 
 

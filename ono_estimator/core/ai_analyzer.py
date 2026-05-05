@@ -79,7 +79,7 @@ class GeminiAnalyzer:
                 os.environ.get("GEMINI_API_KEY_3", ""),
             ] if k
         ]
-        self.fallback_models = ["gemini-2.0-flash", "gemini-2.5-flash-preview"]
+        self.fallback_models = ["gemini-2.0-flash", "gemini-1.5-flash"]
         self.model = None
         self.model_name = GEMINI_MODEL
         self._db = None  # Supabase client (injected via set_db)
@@ -88,7 +88,7 @@ class GeminiAnalyzer:
         self._rotation_order = []
         for key in self.api_keys:
             self._rotation_order.append((key, "gemini-2.0-flash"))
-            self._rotation_order.append((key, "gemini-2.5-flash-preview"))
+            self._rotation_order.append((key, "gemini-1.5-flash"))  # 1-2: 2.5-preview→1.5-flash
         self._rotation_index = 0
 
         if not self.api_keys:
@@ -591,7 +591,8 @@ class GeminiAnalyzer:
                         print("[Gemini] ALL KEYS EXHAUSTED. Using cached data.")
                         return None
                 elif "429" in err:
-                    print(f"[Gemini] 429 → rotating immediately (no wait)")
+                    print(f"[Gemini] 429 → waiting 10s before rotate")
+                    time.sleep(10)  # 1-4: レート制限緩和待機
                     if not self._rotate_key():
                         return None
                 else:
