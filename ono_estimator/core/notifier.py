@@ -26,8 +26,8 @@ class Notifier:
         )
         self.line_token = os.environ.get("LINE_NOTIFY_TOKEN")
         self.session = requests.Session()
-        # H-4: シグナルキーベースのデバウンス（時間制限なし）
-        self._last_signal_key: dict = {}
+        # B-1: シグナルキー + タイムスタンプ管理（30分窓デバウンス）
+        self._last_signal_key: dict = {}   # {sym: (key, timestamp)}
 
     # ─── H-4: シグナルキー生成 ─────────────────────────────────
     def _make_signal_key(self, symbol: str, direction: str, price: float) -> str:
@@ -66,11 +66,18 @@ class Notifier:
             logger.info(f"[Notifier] {symbol} suppressed: event within 2h")
             return
 
-        # H-4: 同一シグナルキーならスキップ（時間制限なし）
+        # B-1: 同一シグナルキーかつ30分未満ならスキップ。方向反転は即時許可
         sig_key = self._make_signal_key(symbol, direction, current_price)
-        if self._last_signal_key.get(symbol) == sig_key:
+        import time as _time
+        last_key, last_ts = self._last_signal_key.get(symbol, (None, 0))
+        elapsed = _time.time() - last_ts
+        if last_key == sig_key and elapsed < 1800:   # 30分以内の同一シグナルはスキップ
             return
-        self._last_signal_key[symbol] = sig_key
+        # 方向が反転した場合は時間に関わらず通知（旧方向のキーと比較）
+        prev_dir = (last_key or "").split("_")[1] if last_key else ""
+        if last_key != sig_key and prev_dir and prev_dir != direction and elapsed < 1800:
+            pass  # 方向反転 → 即時通知
+        self._last_signal_key[symbol] = (sig_key, _time.time())
 
         # H-9: バッジ選択
         if signal_quality == "HIGH" and probability >= 75:
@@ -176,9 +183,10 @@ class Notifier:
             logger.error(f"[Discord] Error: {e}")
 
     # ─── H-20: AI熟練スキャルパー通知（スキャルピング特化フォーマット）──
-    def notify_ai_judgment(self, symbol: str, ai_data: dict) -> None:
-        """スキャルピング戦略特化の通知フォーマットで送信する"""
-        webhook = self.default_webhook
+    def notify_ai_judgment(self, symbol: str, ai_data: dict, base_system: str = "AI") -> None:
+        """スキャルピング戦略特化の通知フォーマットで送信する。B-3: base_systemでwebhookを振り分け"""
+        # B-3: システム名でwebhookを振り分け
+        webhook = self.webhooks.get(base_system) or self.default_webhook
         if not webhook:
             return
 
@@ -186,12 +194,14 @@ class Notifier:
         if direction == "WAIT" and not ai_data.get("should_notify"):
             return
 
-        # デバウンス（同一シグナルの連続防止）
+        # B-1: 30分窓デバウンス
+        import time as _time
         entry_price = ai_data.get("entry_price") or ai_data.get("entry", 0) or 0
         sig_key = self._make_signal_key(symbol, direction, float(entry_price))
-        if self._last_signal_key.get(symbol) == sig_key:
+        last_key, last_ts = self._last_signal_key.get(symbol, (None, 0))
+        if last_key == sig_key and _time.time() - last_ts < 1800:
             return
-        self._last_signal_key[symbol] = sig_key
+        self._last_signal_key[symbol] = (sig_key, _time.time())
 
         dir_icon   = "🟢🟢" if direction == "BUY" else "🔴🔴" if direction == "SELL" else "⚪"
         conf       = ai_data.get("confidence", ai_data.get("signal_quality", "LOW"))

@@ -210,13 +210,14 @@ class TechnicalIndicators:
 
     # ── H-10: レンジ状態自動検出 ─────────────────────────────────
     @staticmethod
-    def detect_range_state(df: pd.DataFrame, bb_ratio: float = 0.6, atr_ratio: float = 0.7) -> dict:
-        """BBバンド幅とATR両方が収縮している時にレンジ確定。レンジ中はエントリー禁止。"""
+    def detect_range_state(df: pd.DataFrame, bb_ratio: float = 0.5, atr_ratio: float = 0.6) -> dict:
+        """C-3: BB幅50%以下 かつ ATR60%以下 かつ high-low値幅がATR×2以下でレンジ確定。"""
         if len(df) < 21:
             return {"is_range": False, "bb_squeezed": False, "atr_compressed": False,
                     "bb_width_ratio": 1.0, "atr_ratio": 1.0,
                     "range_high": 0.0, "range_low": 0.0,
-                    "breakout_up": False, "breakout_down": False}
+                    "breakout_up": False, "breakout_down": False,
+                    "squeeze_released": False}
         close = df["close"]; high = df["high"]; low = df["low"]
         std = close.rolling(20).std()
         bb_w = (std * 2).iloc[-1]
@@ -226,23 +227,32 @@ class TechnicalIndicators:
         tr = pd.concat([high - low,
                         (high - close.shift()).abs(),
                         (low  - close.shift()).abs()], axis=1).max(axis=1)
-        atr_now = tr.rolling(14).mean().iloc[-1]
-        atr_avg = tr.rolling(14).mean().rolling(20).mean().iloc[-1]
+        atr_now = float(tr.rolling(14).mean().iloc[-1])
+        atr_avg = float(tr.rolling(14).mean().rolling(20).mean().iloc[-1])
         atr_low = bool(atr_now < atr_avg * atr_ratio) if atr_avg > 0 else False
 
-        is_range = bb_squeezed and atr_low
+        # C-3: 直近20本のhigh-low値幅がATR×2以下 → レンジ追加条件
         rh = float(high.tail(20).max()); rl = float(low.tail(20).min())
+        hl_range = rh - rl
+        hl_tight = bool(hl_range <= atr_now * 2) if atr_now > 0 else False
+
+        is_range = bb_squeezed and atr_low and hl_tight
+
+        # C-3: スクイーズ解放条件 — BB幅が平均の80%以上に回復
+        squeeze_released = bool(bb_w >= bb_w_avg * 0.8) if bb_w_avg > 0 else False
+
         cur = float(close.iloc[-1])
         return {
-            "is_range":       is_range,
-            "bb_squeezed":    bb_squeezed,
-            "atr_compressed": atr_low,
-            "bb_width_ratio": round(float(bb_w / bb_w_avg) if bb_w_avg > 0 else 1.0, 2),
-            "atr_ratio":      round(float(atr_now / atr_avg) if atr_avg > 0 else 1.0, 2),
-            "range_high":     rh,
-            "range_low":      rl,
-            "breakout_up":    bool(cur > rh),
-            "breakout_down":  bool(cur < rl),
+            "is_range":        is_range,
+            "bb_squeezed":     bb_squeezed,
+            "atr_compressed":  atr_low,
+            "bb_width_ratio":  round(float(bb_w / bb_w_avg) if bb_w_avg > 0 else 1.0, 2),
+            "atr_ratio":       round(float(atr_now / atr_avg) if atr_avg > 0 else 1.0, 2),
+            "range_high":      rh,
+            "range_low":       rl,
+            "breakout_up":     bool(cur > rh),
+            "breakout_down":   bool(cur < rl),
+            "squeeze_released": squeeze_released,
         }
 
     # ── H-11: RSI on Bollinger Bands ─────────────────────────────

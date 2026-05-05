@@ -146,6 +146,8 @@ fred_cache   = {"data": {}, "ts": 0}
 cot_cache    = {"data": {}, "ts": 0}
 _gemini_times: deque = deque(maxlen=60)
 _startup_done = False
+# D-1: 通知ログ（直近20件のインメモリキャッシュ）
+_notification_log: deque = deque(maxlen=20)
 
 # ─── L-2: Correlation Guard ────────────────────────────────────
 _CORR_GROUPS = {
@@ -156,8 +158,8 @@ _CORR_GROUPS = {
 _CORRELATION_GUARD = os.getenv("CORRELATION_GUARD", "false").lower() == "true"
 _corr_notified: dict = {}   # {group: {"sym": sym, "score": score, "ts": ts}}
 
-def _corr_filter_allow(sym: str, score: float) -> bool:
-    """同グループ内で直近30分以内に高スコアが通知済みなら抑制。"""
+def _corr_filter_allow(sym: str, score: float, threshold: float = 40) -> bool:
+    """B-4: 同グループ内重複通知抑制。ただし両方がthreshold以上なら両方通知。"""
     if not _CORRELATION_GUARD:
         return True
     now = time.time()
@@ -166,7 +168,13 @@ def _corr_filter_allow(sym: str, score: float) -> bool:
         if sym not in members:
             continue
         cached = _corr_notified.get(group, {})
-        if now - cached.get("ts", 0) < 1800 and cached.get("score", 0) >= score:
+        cached_score = cached.get("score", 0)
+        cached_ts    = cached.get("ts", 0)
+        # B-4: 両方スコアがthreshold以上なら両方通知を許可
+        if now - cached_ts < 1800 and cached_score >= threshold and score >= threshold:
+            print(f"[CorrGuard] {sym} ALLOWED (both high-score: {cached_score:.0f} vs {score:.0f})")
+            _corr_notified[group] = {"sym": sym, "score": score, "ts": now}
+        elif now - cached_ts < 1800 and cached_score >= score:
             print(f"[CorrGuard] {sym} suppressed — {cached.get('sym')} already notified in {group}")
             allowed = False
         else:
@@ -826,6 +834,56 @@ def _build_engine_signals(sym: str, tf_results: dict, df_store: dict) -> dict:
         _signals["corr_caution"]     = ""
         print(f"[CorrelationFilter] {sym}: {_corr_err}")
 
+    # A-3: コードベース Liquidity Sweep 検出
+    try:
+        from ono_estimator.filters.liquidity_sweep import detect_liquidity_sweep as _dls
+        _ls_df = df_store.get("5m") or df_store.get("1m") or df1h
+        if _ls_df is not None and len(_ls_df) >= 22:
+            _ls = _dls(_ls_df)
+            _signals["ls_detected"]  = _ls["detected"]
+            _signals["ls_direction"] = _ls["direction"]
+            _signals["ls_level"]     = _ls["sweep_level"]
+            # Sweepが検出されたらスコアに+20
+            if _ls["detected"]:
+                _signals["ls_score_bonus"] = 20
+                iron_patterns.append(f"LiquiditySweep_CODE:{_ls['direction']}")
+        else:
+            _signals["ls_detected"] = False
+            _signals["ls_direction"] = "NONE"
+            _signals["ls_level"] = 0.0
+            _signals["ls_score_bonus"] = 0
+    except Exception as _ls_err:
+        _signals["ls_detected"] = False
+        _signals["ls_direction"] = "NONE"
+        _signals["ls_level"] = 0.0
+        _signals["ls_score_bonus"] = 0
+        print(f"[LiquiditySweep] {sym}: {_ls_err}")
+
+    # C-1: コードベース エントリータイプ検出
+    try:
+        from ono_estimator.filters.entry_type_detector import detect_entry_type as _det
+        _et_df = df_store.get("5m") or df_store.get("1m") or df1h
+        _hs_pat = next((p for p in iron_patterns if "HeadAndShoulders" in str(p)), "なし")
+        _detected_et = _det(_et_df, key_levels, _hs_pat)
+        _signals["detected_entry_type"] = _detected_et
+    except Exception as _et_err:
+        _signals["detected_entry_type"] = "NONE"
+        print(f"[EntryTypeDetector] {sym}: {_et_err}")
+
+    # C-2: MTF コンフルエンススコア計算
+    try:
+        _mtf_conf = _calc_mtf_confluence(sym)
+        _signals["mtf_confluence_score"]    = _mtf_conf.get("pct", 0)
+        _signals["mtf_confluence_dominant"] = _mtf_conf.get("dominant", "WAIT")
+        _signals["mtf_confluence_count"]    = _mtf_conf.get("confluence_score", 0)
+        if _mtf_conf.get("pct", 0) >= 60:
+            _signals["mtf_conf_bonus"] = 15
+        else:
+            _signals["mtf_conf_bonus"] = 0
+    except Exception:
+        _signals["mtf_confluence_score"] = 0
+        _signals["mtf_conf_bonus"] = 0
+
     return _signals
 
 
@@ -1117,26 +1175,70 @@ async def ai_loop():
                     market_overview["global_theme"] = (ai_data.get("ai_text") or "")[:80] + "..."
                     market_overview["last_update_ts"] = int(time.time())
 
-                # L-5: SQI — 連敗5以上の場合は通知閾値を引き上げ
+                # L-5: SQI — 連敗5以上の場合は通知閾値を引き上げ（B-2: 70に緩和）
                 sqi_streak = _sqi_loss_streak.get(sym, 0)
-                notify_threshold = 80 if (_sqi_total_scored >= 100 and sqi_streak >= 5) else 45
+                notify_threshold = 70 if (_sqi_total_scored >= 100 and sqi_streak >= 5) else 40
 
-                # L-2: Correlation Guard（同グループ内重複通知抑制）
-                notify_allowed = _corr_filter_allow(sym, score)
+                # A-2: confidence=HIGH かつ prob>=65 なら強制的に should_notify=True
+                confidence_level = ai_data.get("confidence", ai_data.get("signal_quality", "LOW"))
+                if confidence_level == "HIGH" and prob >= 65:
+                    should_notify = True
+                    ai_data["should_notify"] = True
+
+                # L-2: Correlation Guard（B-4: 両方スコア>=threshold なら両方通知）
+                notify_allowed = _corr_filter_allow(sym, score, notify_threshold)
+
+                # B-2: OR条件に緩和（score>=40 OR prob>=65 OR confidence==HIGH OR should_notify）
+                should_send = (
+                    should_notify
+                    or score >= notify_threshold
+                    or prob >= 65
+                    or confidence_level == "HIGH"
+                )
+
+                # D-2: スキップ理由ログ
+                if not is_locked and not notify_allowed:
+                    skip_reason = "Correlation Guard"
+                    print(f"[Notify] {sym} SKIP: {skip_reason}")
+                elif is_locked:
+                    skip_reason = "Daily Lock"
+                    print(f"[Notify] {sym} SKIP: {skip_reason}")
+                elif not should_send:
+                    skip_reason = f"スコア不足 (score={score}, prob={prob}, conf={confidence_level})"
+                    print(f"[Notify] {sym} SKIP: {skip_reason}")
+                else:
+                    skip_reason = None
+                    print(f"[Notify] {sym} SEND: score={score}, prob={prob}, conf={confidence_level}, should_notify={should_notify}")
 
                 # T-07: エントリーシグナル記録
-                if should_notify or abs(score) >= notify_threshold or (ai_data.get("direction", "NONE") not in ("NONE", "WAIT", "")):
+                if should_send and not is_locked:
                     log_entry_signal(sym)
 
-                # H-12: AI熟練トレーダー通知
-                if not is_locked and notify_allowed and (should_notify or abs(score) >= notify_threshold or prob >= 75):
+                # H-12: AI熟練トレーダー通知（B-3: base_system渡し）
+                base_system = engine_signals.get("base_system", ai_data.get("base_system", "AI"))
+                notified = False
+                if not is_locked and notify_allowed and should_send:
                     try:
-                        notifier.notify_ai_judgment(sym, ai_data)
+                        notifier.notify_ai_judgment(sym, ai_data, base_system=base_system)
+                        notified = True
                     except Exception as ne:
                         print(f"[Notifier] {sym}: {ne}")
                         try:
                             notifier.notify_if_needed(sym, None, ai_data, price_cache.get(sym, 0))
+                            notified = True
                         except Exception: pass
+
+                # D-1/D-2: 通知ログ記録（送信/スキップ両方）
+                _notification_log.appendleft({
+                    "symbol":      _short(sym),
+                    "direction":   ai_data.get("direction", "WAIT"),
+                    "score":       score,
+                    "probability": prob,
+                    "confidence":  confidence_level,
+                    "notified":    notified,
+                    "skip_reason": skip_reason,
+                    "ts":          datetime.utcnow().isoformat(),
+                })
 
                 # H-11: DemoTrader エントリー
                 if not is_locked and should_demo and demo_trader:
@@ -1734,6 +1836,12 @@ def performance_by_symbol():
         return {"data": rows, "count": len(rows)}
     except Exception as e:
         return {"data": [], "count": 0, "error": str(e)}
+
+
+@app.get("/api/notifications")
+def notifications():
+    """D-1: 直近20件の通知ログ（送信/スキップ含む）"""
+    return {"data": list(_notification_log), "count": len(_notification_log)}
 
 
 @app.get("/api/confluence/{symbol}")

@@ -285,6 +285,14 @@ class GeminiAnalyzer:
             corr_caution    = es.get("corr_caution", "")
             corr_tags       = es.get("corr_tags", [])
 
+            # ── A-3: コードベース Liquidity Sweep 検出 ──
+            ls_detected  = es.get("ls_detected", False)
+            ls_direction = es.get("ls_direction", "NONE")
+            ls_level     = float(es.get("ls_level", 0.0))
+
+            # ── C-1: コードベース エントリータイプ ──
+            detected_entry_type = es.get("detected_entry_type", "NONE")
+
             # ── スキャルピング戦略指標（H-5〜H-15）──
             liq_signal      = es.get("liq_signal", "NONE")
             liq_bull_sweep  = es.get("liq_bull_sweep", False)
@@ -433,9 +441,11 @@ class GeminiAnalyzer:
                 f"- UPLOWバンド状態(1H): {uplow_state}",
                 "",
                 "【Step3: エントリートリガー確認（Liquidity Sweep最優先）】",
-                f"- [A] Liquidity Sweep: {liq_str}",
+                f"- [A] Liquidity Sweep【コード検出】: {'✅ ' + ls_direction + ' 方向 @ ' + str(round(ls_level, 5)) if ls_detected else '未検出'}",
+                f"- [A'] Liquidity Sweep【旧指標参照】: {liq_str}",
                 f"- [B] ヒゲ否定: {wick_str}",
                 f"- [C] プライスアクション: {pa_trigger}",
+                f"- [コード判定] エントリータイプ: {detected_entry_type}（コード側で確定。この値を entry_type に使うこと）",
                 f"- 検知パターン: {iron_pats}",
                 f"- S/Rキーレベル: {sr_text}",
                 f"- フィボナッチ: {fib_str}",
@@ -464,8 +474,17 @@ class GeminiAnalyzer:
                 "上記5ステップで分析し、以下のJSONのみ出力。マークダウン・説明文は禁止。",
                 "directionは BUY / SELL / NONE のいずれか（NONEは見送り）。",
                 "is_range=trueの場合はdirection=NONEとし、should_enter_demo=falseとすること。",
+                "",
+                "【should_notify の判断基準（定量的・厳守）】",
+                "以下の3根拠が全て揃った場合は should_notify: true を必ず出力すること:",
+                "  根拠①: 200MAに対する価格位置が明確（price_vs_ma200 が ABOVE/BELOW のいずれか）",
+                "  根拠②: Liquidity Sweep / BODY_BREAK / WICK_DENIAL のいずれかが検出済み",
+                "  根拠③: RSI・MACD・ストキャスのうち2つ以上が同じ方向を示している",
+                "confidence=HIGH かつ probability>=65 の場合も should_notify: true を必ず出力すること。",
+                "保守的にfalseを出力することは禁止。3根拠が揃えば積極的にtrueにすること。",
+                "",
                 "should_enter_demo: 3根拠以上揃い高確度ならtrue、見送りならfalse。",
-                "entry_typeは: LIQUIDITY_SWEEP / BODY_BREAK / WICK_DENIAL / HAS_SHOULDER / NONE のいずれか。",
+                "entry_typeは [コード判定] の値を優先。なければ: LIQUIDITY_SWEEP / BODY_BREAK / WICK_DENIAL / HAS_SHOULDER / NONE のいずれか。",
                 "ai_textは【トレンド】【レンジ判定】【エントリー根拠】【反発確認】【判断】【計画】の6節で構成。",
                 "",
                 "{",

@@ -226,6 +226,85 @@ function LayerBreakdown({ layers }: { layers: Record<string, number> }) {
   );
 }
 
+// ─── A-1: 総合エントリー判断バナー ────────────────────────────
+function EntryJudgmentBanner({ direction, confidence, probability }: {
+  direction: string; confidence: string; probability: number
+}) {
+  const dir = direction.toUpperCase();
+  const isBuy  = dir.includes("BUY");
+  const isSell = dir.includes("SELL");
+  const isWait = !isBuy && !isSell;
+
+  const bg    = isBuy  ? "linear-gradient(135deg, rgba(34,197,94,0.15), rgba(34,211,238,0.08))"
+              : isSell ? "linear-gradient(135deg, rgba(239,68,68,0.15), rgba(251,113,133,0.08))"
+              : "linear-gradient(135deg, rgba(71,85,105,0.2), rgba(51,65,85,0.1))";
+  const border = isBuy  ? "rgba(34,197,94,0.5)"
+               : isSell ? "rgba(239,68,68,0.5)"
+               : "rgba(100,116,139,0.3)";
+  const col   = isBuy  ? "#22c55e" : isSell ? "#ef4444" : "#9ca3af";
+  const icon  = isBuy  ? "🟢" : isSell ? "🔴" : "⏸";
+  const label = isBuy  ? "BUY" : isSell ? "SELL" : "様子見";
+  const confCol = confidence === "HIGH" ? "#22d3ee" : confidence === "MEDIUM" ? "#f59e0b" : "#64748b";
+
+  return (
+    <div style={{
+      background: bg, border: `2px solid ${border}`,
+      borderRadius: 16, padding: "18px 22px",
+      display: "flex", alignItems: "center", justifyContent: "space-between",
+      marginBottom: 16,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+        <span style={{ fontSize: 36 }}>{icon}</span>
+        <div>
+          <div style={{ fontSize: 28, fontWeight: 900, color: col, letterSpacing: 2 }}>{label}</div>
+          <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>総合エントリー判断</div>
+        </div>
+      </div>
+      <div style={{ textAlign: "right" }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: confCol }}>{confidence}</div>
+        <div style={{ fontSize: 22, fontWeight: 800, color: col }}>{probability}%</div>
+        <div style={{ fontSize: 10, color: "#475569" }}>信頼度 / 勝率予測</div>
+      </div>
+    </div>
+  );
+}
+
+// ─── D-1: 通知ログパネル ───────────────────────────────────────
+function NotificationLog({ raw }: { raw: any }) {
+  const rows: any[] = raw?.data ?? [];
+  if (rows.length === 0) return null;
+  return (
+    <div style={{
+      background: "rgba(255,255,255,0.02)",
+      border: "1px solid rgba(255,255,255,0.06)",
+      borderRadius: 12, padding: "12px 16px", marginTop: 12,
+    }}>
+      <div style={{ fontSize: 11, color: "#64748b", letterSpacing: 1, marginBottom: 10 }}>RECENT NOTIFICATIONS</div>
+      {rows.map((r: any, i: number) => {
+        const col = r.direction === "BUY" ? "#22c55e" : r.direction === "SELL" ? "#ef4444" : "#64748b";
+        return (
+          <div key={i} style={{
+            display: "flex", alignItems: "center", gap: 10,
+            padding: "6px 0",
+            borderBottom: i < rows.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none",
+            fontSize: 11,
+          }}>
+            <span style={{ fontSize: 14 }}>{r.notified ? "🔔" : "🔕"}</span>
+            <span style={{ fontWeight: 700, color: col, width: 52 }}>{r.symbol}</span>
+            <span style={{ color: col, width: 36 }}>{r.direction}</span>
+            <span style={{ color: "#64748b", width: 44 }}>s:{r.score}</span>
+            <span style={{ color: "#64748b", width: 44 }}>p:{r.probability}%</span>
+            <span style={{ color: "#475569", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {r.notified ? "✅ 通知" : `⏭ ${r.skip_reason || "スキップ"}`}
+            </span>
+            <span style={{ color: "#334155", fontSize: 10 }}>{r.ts ? r.ts.slice(11, 16) : ""}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── T-09: 思考プロセスカード ─────────────────────────────────
 function ThinkingProcessCard({ d, symbol }: { d: any; symbol: string }) {
   const step1 = d?.step1_trend || "";
@@ -342,10 +421,15 @@ function DailyEntryProgress({ raw }: { raw: any }) {
   );
 }
 
-// ─── 3-3: 銘柄別パフォーマンステーブル ──────────────────────────
+// ─── 3-3/D-3: 銘柄別パフォーマンステーブル ────────────────────
 function SymbolPerformanceTable({ raw }: { raw: any }) {
   const rows: any[] = raw?.data ?? [];
   if (rows.length === 0) return null;
+
+  const SESSION_LABELS: Record<string, string> = {
+    tokyo: "東京", london: "ロンドン", ny: "NY", off: "閑散"
+  };
+
   return (
     <div style={{
       background: "rgba(255,255,255,0.02)",
@@ -357,25 +441,35 @@ function SymbolPerformanceTable({ raw }: { raw: any }) {
         <thead>
           <tr style={{ color: "#475569" }}>
             <th style={{ textAlign: "left",  paddingBottom: 6 }}>銘柄</th>
-            <th style={{ textAlign: "right", paddingBottom: 6 }}>シグナル</th>
-            <th style={{ textAlign: "right", paddingBottom: 6 }}>採点</th>
+            <th style={{ textAlign: "right", paddingBottom: 6 }}>計</th>
             <th style={{ textAlign: "right", paddingBottom: 6 }}>勝率</th>
-            <th style={{ textAlign: "right", paddingBottom: 6 }}>平均スコア</th>
+            <th style={{ textAlign: "right", paddingBottom: 6 }}>Avg</th>
+            <th style={{ textAlign: "right", paddingBottom: 6 }}>東京</th>
+            <th style={{ textAlign: "right", paddingBottom: 6 }}>NY</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((r: any) => {
             const wr = r.win_rate;
             const wrCol = wr == null ? "#64748b" : wr >= 60 ? "#22d3ee" : wr >= 50 ? "#f59e0b" : "#f87171";
+            const tokyoWr = r.by_session?.tokyo?.win_rate;
+            const nyWr    = r.by_session?.ny?.win_rate;
+            const sessCol = (w: number | null) =>
+              w == null ? "#475569" : w >= 60 ? "#22d3ee" : w >= 50 ? "#f59e0b" : "#f87171";
             return (
               <tr key={r.symbol} style={{ borderTop: "1px solid rgba(255,255,255,0.04)" }}>
                 <td style={{ paddingTop: 5, paddingBottom: 5, color: "#94a3b8" }}>{r.symbol}</td>
                 <td style={{ textAlign: "right", color: "#64748b" }}>{r.total}</td>
-                <td style={{ textAlign: "right", color: "#64748b" }}>{r.scored}</td>
                 <td style={{ textAlign: "right", fontWeight: 700, color: wrCol }}>
                   {wr != null ? `${wr}%` : "---"}
                 </td>
                 <td style={{ textAlign: "right", color: "#94a3b8" }}>{r.avg_score}</td>
+                <td style={{ textAlign: "right", color: sessCol(tokyoWr) }}>
+                  {tokyoWr != null ? `${tokyoWr}%` : "---"}
+                </td>
+                <td style={{ textAlign: "right", color: sessCol(nyWr) }}>
+                  {nyWr != null ? `${nyWr}%` : "---"}
+                </td>
               </tr>
             );
           })}
@@ -472,6 +566,7 @@ export default function Dashboard() {
   const [margin, setMargin] = useState("1000000");
   const [session, setSession] = useState(getCurrentSession());
   const [showInfo, setShowInfo] = useState(false);
+  const [showAnalysisDetail, setShowAnalysisDetail] = useState(false); // A-1: 詳細折りたたみ
 
   // URLパラメータ ?debug=1 でデバッグタブを有効化
   useEffect(() => {
@@ -541,6 +636,12 @@ export default function Dashboard() {
   const { data: perfBySymRaw } = useSWR(
     `${API_URL}/api/performance`, fetcher,
     { revalidateOnFocus: false, refreshInterval: 300000 }
+  );
+
+  // D-1: 通知ログ
+  const { data: notifLogRaw } = useSWR(
+    `${API_URL}/api/notifications`, fetcher,
+    { ...swrOpts, refreshInterval: 30000 }
   );
 
   const isConnected = !error && !isLoading;
@@ -1152,6 +1253,9 @@ export default function Dashboard() {
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 400px", gap: 20 }}>
               <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                {/* A-1: 総合エントリー判断バナー */}
+                <EntryJudgmentBanner direction={dir} confidence={confidence} probability={prob} />
+
                 {/* Signal summary at top */}
                 <SignalHero
                   direction={dir} probability={prob} score={score}
@@ -1250,9 +1354,21 @@ export default function Dashboard() {
                           </div>
                         </div>
                       )}
-                      {/* T-09: 思考プロセスカード */}
+                      {/* T-09: 思考プロセスカード（A-1: 折りたたみ式） */}
                       <div style={{ marginTop: 16 }}>
-                        <ThinkingProcessCard d={current} symbol={activeSymbol} />
+                        <button
+                          onClick={() => setShowAnalysisDetail(v => !v)}
+                          style={{
+                            background: "none", border: "1px solid rgba(255,255,255,0.08)",
+                            borderRadius: 8, padding: "6px 14px", color: "#64748b",
+                            cursor: "pointer", fontSize: 11, marginBottom: 8,
+                            display: "flex", alignItems: "center", gap: 6,
+                          }}
+                        >
+                          <ChevronRight size={12} style={{ transform: showAnalysisDetail ? "rotate(90deg)" : "none", transition: "0.2s" }} />
+                          {showAnalysisDetail ? "詳細を閉じる" : "詳細を見る（4ステップ分析）"}
+                        </button>
+                        {showAnalysisDetail && <ThinkingProcessCard d={current} symbol={activeSymbol} />}
                       </div>
                     </>
                   )}
@@ -1264,6 +1380,8 @@ export default function Dashboard() {
                 <DailyEntryProgress raw={dailyEntriesRaw} />
                 {/* 3-3: 銘柄別パフォーマンステーブル */}
                 <SymbolPerformanceTable raw={perfBySymRaw} />
+                {/* D-1: 通知ログ */}
+                <NotificationLog raw={notifLogRaw} />
                 <div style={{
                   background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
                   borderRadius: 16, padding: 18,
