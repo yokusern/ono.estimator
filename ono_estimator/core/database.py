@@ -336,6 +336,44 @@ class SupabaseClient:
         return []
 
     # ─── legacy ───────────────────────────────────────────────
+    def get_performance_by_symbol(self, limit: int = 500) -> List[Dict]:
+        """銘柄別パフォーマンス: 総シグナル数・勝率・平均スコアを返す。"""
+        if not self.client:
+            return []
+        try:
+            res = self.client.table("predictions")\
+                .select("symbol,score,is_scored,is_correct")\
+                .order("created_at", desc=True)\
+                .limit(limit).execute()
+            rows = res.data or []
+            agg: Dict[str, Dict] = {}
+            for r in rows:
+                sym = r.get("symbol", "?")
+                if sym not in agg:
+                    agg[sym] = {"symbol": sym, "total": 0, "scored": 0, "wins": 0, "score_sum": 0.0}
+                agg[sym]["total"] += 1
+                agg[sym]["score_sum"] += float(r.get("score") or 0)
+                if r.get("is_scored"):
+                    agg[sym]["scored"] += 1
+                    if r.get("is_correct"):
+                        agg[sym]["wins"] += 1
+            result = []
+            for sym, d in agg.items():
+                t, s, w = d["total"], d["scored"], d["wins"]
+                result.append({
+                    "symbol":      sym,
+                    "total":       t,
+                    "scored":      s,
+                    "wins":        w,
+                    "win_rate":    round(w / s * 100, 1) if s > 0 else None,
+                    "avg_score":   round(d["score_sum"] / t, 1) if t > 0 else 0.0,
+                })
+            result.sort(key=lambda x: x["total"], reverse=True)
+            return result
+        except Exception as e:
+            logger.warning(f"[Supabase] get_performance_by_symbol error: {e}")
+            return []
+
     def get_history(self, limit: int = 50) -> List[Dict]:
         return self.get_predictions(limit=limit)
 

@@ -29,6 +29,10 @@ class PredictionResult:
         self.rationale_b: str = ""
         self.caution: str = ""
         self.tags: List[str] = []
-        
+        # 3-1: TP/SL自動計算フィールド
+        self.tp_price: float = 0.0
+        self.sl_price: float = 0.0
+        self.risk_reward: float = 0.0
+
     def __repr__(self):
         return f"<PredictionResult status={self.status.value} system={self.base_system} score={self.win_rate_score} tags={self.tags}>"

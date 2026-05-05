@@ -1,140 +1,209 @@
-# ONO Estimator Ultra — Todo.md
-> 更新: 2026-05-05 全HIGH+MEDIUM完了・スキャルピングAI稼働中
-> 担当: Claude Code 実装 / Claude (このチャット) 方針管理
+# ONO Estimator Ultra — TODO / 実装ロードマップ
+
+> **役割分担の確認**
+> - **このチャット（Claude）**: プロンプト設計・分析・方針
+> - **Claude Code**: 実際のコード実装
+> - ステータス: `[ ]` 未着手 / `[x]` 完了 / `[~]` 進行中
 
 ---
 
-## 根本方針
+## 🚨 PHASE 0 — バグ修正（最優先）
 
-**AIが熟練スキャルパーとして、MTカリキュラム全理論＋実践スキャルピング戦略の両方を知った上で分析・判断する。**
+### 0-1. AI分析レポートが「待機中」から更新されない問題
 
-スコアは参考値。AIが言葉で「なぜここでエントリーするか」を説明することが主役。
-TP15pips・SL5〜7pipsを基本とした高RRスキャルピングを目指す。基本なので分析して伸びそうなら続けても構いません。
+**原因（推定）:**
+- `MAX_GEMINI_PER_MINUTE = 3` かつ銘柄数8件 → 1サイクルで全銘柄をカバーできない
+- `GEMINI_CALL_INTERVAL = 15秒` × 8銘柄 = 120秒かかり、60秒サイクルに収まらない
+- Gemini API呼び出しが `return None` で失敗しても `last_ai_analysis` の時刻が更新されず、次サイクルで再実行されない（または逆にスキップされる）
+- Supabaseからのプリロードはされているが、フロントへの反映タイミングのズレ
 
----
+**対応内容:**
+- [x] `ai_analyzer.py` の `_call_api` にタイムアウト設定（`generation_config` で `timeout=20`）を追加
+- [x] Gemini失敗時に `last_ai_analysis[sym]` をリセットして次サイクルで必ず再試行
+- [x] `needs_ai_analysis()` で「最終更新から5分以上経過したら強制再実行」のフォールバックを追加
+- [x] フロントの `ai_text` 初期値を `"分析データを読み込み中..."` → `"AIが分析中です（初回は最大2分かかる場合があります）"` に変更
+- [x] `api/server.py` の Gemini呼び出し結果が `None` の場合でも `last_ai_analysis` を更新するよう修正（無限スキップを防ぐ）
+- [x] Gemini APIキーが未設定の場合、`ai_text` に「APIキー未設定のためAI分析は無効です」と明示
 
-## 現在の稼働状況
-
-| 項目 | 状態 |
-|---|---|
-| フロント表示 | ✅ 正常・全8銘柄LIVE |
-| データ取得 | ✅ 正常 |
-| スコア計算 | ✅ 動作中 |
-| AI分析 | ✅ Gemini 3キー×2モデル=6ローテーション |
-| engine_signals | ✅ 全指標統合済み |
-| ファンダ分析テキスト | ✅ フロント表示中 |
-| 学習理論の意識テキスト | ✅ awareness_text表示中 |
-| デモ売買 | ✅ DemoTrader稼働中 |
-| 自己反省・成長ループ | ✅ LOSS→AI反省→次回プロンプトに反映 |
-| レンジ視覚表示 | ✅ RANGE_WAITバナー表示中 |
-| RSI on BBゲージ | ✅ AIタブに表示中 |
+**対象ファイル:** `ono_estimator/core/ai_analyzer.py`, `api/server.py`
 
 ---
 
-## ✅ 完了済み
+## 🔴 PHASE 1 — エントリー機会の拡大（高優先）
 
-### 基盤修正
-- ✅ SyntaxError・importエラー・引数エラー系 全修正
-- ✅ Gemini フォールバックチェーン再構築（3キー×2モデル=6ローテーション）
-- ✅ KeyError: '_engine_signals' 修正
-- ✅ Supabase テーブル作成・スキーマキャッシュリロード
-- ✅ Vercel 環境変数・Redeploy完了
-- ✅ lightweight-charts 4.1.3 固定・フロント表示復活
-- ✅ /api/predict キー不一致修正
-- ✅ フロント全8銘柄LIVE・スコア・BUY/SELL表示確認
+### 1-1. LWSystemのエントリー条件を緩和
 
-### HIGH 全完了
-- ✅ H-0a: Gemini 429根本対策（キー×モデルローテーション）
-- ✅ H-0b: active_signals PGRST205完全解決
-- ✅ H-1: Geminiを「AI熟練スキャルパー」として完全再設計（MTカリキュラム18理論＋スキャルピング戦略統合）
-- ✅ H-2: 5-LAYERスコアの0.0問題を修正・engine_signals接続
-- ✅ H-3: ファンダ分析テキスト・意識テキストをフロントに表示
-- ✅ H-4: グランビルパターン自動検出
-- ✅ H-5: Liquidity Sweep 自動検出（最重要スキャルピングシグナル）
-- ✅ H-6: 実体ブレイク検出
-- ✅ H-7: ヒゲ否定検出
-- ✅ H-8: 勢い減衰検出（反発判断）
-- ✅ H-9: セカンドテスト検出（2度目の反発確認）
-- ✅ H-10: レンジON/OFF自動検出
-- ✅ H-11: RSI on ボリンジャーバンド計算
-- ✅ H-12: ストキャスティクス実装（TKSシステム）
-- ✅ H-13: 一目均衡表実装（LWシステム）
-- ✅ H-14: UPLOWバンド実装（SVシステム）
-- ✅ H-15: フィボナッチリトレースメント自動計算
-- ✅ H-16: BBスコア強化（6軸・最大83点）
-- ✅ H-17: engine_signals 完全実装（全指標を統合・1m+1h二層構造）
-- ✅ H-18: 即時性改善（データ取得10秒fast_loop・AI分析60秒ai_loop完全分離）
-- ✅ H-19: AIデモ売買システム（DemoTrader）自律エントリー・TP/SL自動決済
-- ✅ H-20: 通知フォーマットの刷新（スキャルピング形式・AI反省通知）
+**現状の問題:** RSI≤30 + デッドクロス + 陽線の3条件同時は非常に稀
 
-### MEDIUM 完了（M-10のみ残）
-- ✅ M-1: EMAクロス検出（短期EMA8/中期EMA21・角度評価）
-- ✅ M-2: MACDダイバージェンス検出
-- ✅ M-3: ネックライン自動検出（三尊・逆三尊）
-- ✅ M-4: エリオット波動カウンター（第3波検出）
-- ✅ M-5: 吸収（Absorption）検出（出来高スパイク＋長いヒゲ）
-- ✅ M-6: フロントにRSI on BBのゲージを追加（AIタブ右列）
-- ✅ M-7: フロントにレンジ状態の視覚表示（RANGE_WAITバナー・カードグレーアウト）
-- ✅ M-8: フロントにデモ売買成績パネル追加（Demoタブ・勝率・履歴）
-- ✅ M-9: Fear & Greed をプロンプトへ接続（VIX経由でGeminiプロンプトに渡す）
+**変更内容:**
+- [x] Buy条件: `RSI ≤ 30` → `RSI ≤ 40` に緩和
+- [x] クロス条件: 「クロス発生」を「MA25がMA75に接近中（差が縮まっている）」に変更
+- [x] 代替条件を追加: `RSI ≤ 35` かつ `MA25 > MA75`（上昇環境）でもSTANDBYを返す
+- [x] Sell条件も対称的に緩和（RSI ≥ 60、MA接近中）
+
+**対象ファイル:** `ono_estimator/systems/lw_system.py`
 
 ---
 
-## 🟡 MEDIUM — 残り1件
+### 1-2. 汎用GenericSystemの新規作成（GOLD・BTC・XAGUSD・EURUSD・AUDJPY・EURJPY用）
 
-### M-10 ✅ Supabaseキャッシュ層（Render落ち時フロント保護）
-- `frontend/src/app/api/supabase-cache/route.ts` 作成済み
-- Dashboard.tsx がRender停止時にSupabaseキャッシュへ自動フォールバック
-- Vercel環境変数に `SUPABASE_URL` と `SUPABASE_ANON_KEY` を追加すれば有効
+**現状の問題:** 上記6銘柄はengine.pyで `continue` されてAI丸投げ状態
 
----
+**実装内容:**
+- [x] `ono_estimator/systems/generic_system.py` を新規作成
+- [x] 判定ロジック: 200SMA位置 + RSI(14) + MACDクロスの3条件
+  - BUY_STANDBY: 200SMA上 + RSI 40-60 + MACDがゼロライン上
+  - SELL_STANDBY: 200SMA下 + RSI 40-60 + MACDがゼロライン下
+  - BUY_START: 上記 + ゴールデンクロス発生
+  - SELL_START: 上記 + デッドクロス発生
+- [x] `engine.py` のシンボル分岐に `GenericSystem` を追加
+- [x] `ono_estimator/systems/__init__.py` にエクスポート追加
 
-## 🟢 LOW — 全完了
-
-### L-1 ✅ Momentum Exhaustion Detector（勢い減衰の早期警告）
-`detect_momentum_exhaustion()` をtechnical.pyに追加。MACDヒスト減衰＋BBバンド収縮＋BB±1.5σ到達の複合判定。engine_signals経由でGeminiプロンプトに渡す。
-
-### L-2 ✅ Correlation Guard（相関フィルター）
-JPY/EUR/METALの3グループ定義。`CORRELATION_GUARD=true` 環境変数で有効化。同グループ内で30分以内に高スコア通知済みなら抑制。
-
-### L-3 ✅ Volatility Regime Estimator（VRE）
-`volatility_regime()` がtechnical.pyに既存。server.pyの `_build_engine_signals` で1H足から算出してengine_signalsに含める。
-
-### L-4 ✅ Adaptive Learning Score（採点精度改善）
-`auto_evaluate_loop()` がTP/SL到達判定ベースの採点を実施済み（TP到達→WIN、SL到達→LOSS）。
-
-### L-5 ✅ Signal Quality Index（SQI）
-`_sqi_loss_streak` で銘柄別連敗カウント。採点100件以上 + 連敗5以上で通知閾値を45→80に引き上げ。
-
-### L-6 ✅ Weekly足（W1）対応
-`TimeFrame.W1 = "1wk"` をmodels.pyに追加。hybrid_fetcher.pyの `TF_FETCH_CONFIG` に `"1wk": ("1wk", "20y", 200)` 追加。`_build_engine_signals` で週足MA200位置とダウ理論トレンドを算出してGeminiプロンプトの最上位フィルターとして使用。
-
-### L-7 ✅ Render常時稼働強化
-`anti_sleep_loop` インターバルを120sに短縮済み。
-
-### L-8 ✅ Pine Script インジケーター出力
-`pine_script/ono_estimator.pine` 生成済み。以下を実装:
-- Liquidity Sweep の矢印 + ラベル（💦 BUY/SELL）
-- ヒゲ否定のダイヤモンドマーカー
-- レンジON/OFF背景色 + ブレイクアウト矢印
-- グランビル買い②/売り②のラベル
-- EMA8/21ゴールデン/デッドクロスラベル
-- フィボナッチ50%/61.8%/38.2%水平線
-- RSI over-heat/over-cold 背景色
-- 勢い枯れ（L-1）× マーカー
-- 全シグナルのAlertCondition設定
+**対象ファイル:** `ono_estimator/systems/generic_system.py`（新規）, `ono_estimator/core/engine.py`, `ono_estimator/systems/__init__.py`
 
 ---
 
-## 🎉 全タスク完了
+### 1-3. バンドウォーク中の追従エントリーを許可
 
-```
-HIGH:   H-0a ～ H-20  ✅ (21項目)
-MEDIUM: M-1  ～ M-10  ✅ (10項目)
-LOW:    L-1  ～ L-8   ✅ (8項目)
-```
+**現状の問題:** `is_band_walk = True` → 無条件で `STAY` になりチャンスを逃す
 
-次のステップ（任意）:
-- Vercelに `SUPABASE_URL` / `SUPABASE_ANON_KEY` を設定してM-10を有効化
-- Renderに `CORRELATION_GUARD=true` を設定してL-2を有効化
-- TradingViewで `pine_script/ono_estimator.pine` をインポート
+**変更内容:**
+- [x] `trigger.py` にバンドウォーク追従シグナルを追加
+  - バンドウォーク中 + 1分足の直近2本が「陰線→陽線（Buy）」または「陽線→陰線（Sell）」 → `BAND_FOLLOW` フラグを立てる
+- [x] `engine.py` で `BAND_FOLLOW` の場合は `STAY` でなく `BUY_START` / `SELL_START` を返す
+
+**対象ファイル:** `ono_estimator/filters/trigger.py`, `ono_estimator/core/engine.py`
+
+---
+
+## 🟡 PHASE 2 — 分析精度の向上（中優先）
+
+### 2-1. 時間帯フィルターの追加
+
+**実装内容:**
+- [x] `ono_estimator/filters/session_filter.py` を新規作成
+- [x] セッション定義（JST基準）:
+  - 東京時間: 9:00-12:00 → USDJPY・AUDJPY・EURJPY のスコアに +10
+  - ロンドン時間: 16:00-21:00 → EURUSD・XAGUSD のスコアに +10
+  - NY時間: 21:00-02:00 → GOLD・BTC・全ペア有効（全銘柄 +5）
+  - 深夜(02:00-09:00) → 全銘柄スコアに -10（閑散時間帯警告）
+- [x] `engine.py` の `win_rate_score` 計算にセッション補正を加算
+- [x] `result.caution` に「現在はXXXセッション外のため流動性が低い可能性があります」を追記
+
+**対象ファイル:** `ono_estimator/filters/session_filter.py`（新規）, `ono_estimator/core/engine.py`, `ono_estimator/filters/__init__.py`
+
+---
+
+### 2-2. キーレベル（水平線）検出の追加
+
+**実装内容:**
+- [x] `ono_estimator/filters/key_level_detector.py` を新規作成
+- [x] 検出ロジック:
+  - 日足・4H足の直近50本のHigh/Lowを取得
+  - 価格が±0.3%以内に集まっている箇所を「キーレベル」と判定
+  - 現在値がキーレベルから±0.5%以内 → `near_key_level = True`
+- [x] キーレベル付近でのシグナル: スコアに +10
+- [x] キーレベルをブレイク（直近確定足がレベルを超えた）: `#KeyLevel_Breakout` タグを付与 + スコアに +15
+- [x] `result.rationale_a` にキーレベル情報を追記
+
+**対象ファイル:** `ono_estimator/filters/key_level_detector.py`（新規）, `ono_estimator/core/engine.py`, `ono_estimator/filters/__init__.py`
+
+---
+
+### 2-3. ATRボラティリティ判定の追加
+
+**実装内容:**
+- [x] `ono_estimator/indicators/technical.py` に `atr()` メソッドを追加（期間14）
+- [x] `momentum.py` または `engine.py` でATRを計算
+  - ATR が直近20本平均の **1.5倍以上** → `result.caution` に「⚠️ 高ボラティリティ：スプレッド拡大に注意」
+  - ATR が直近20本平均の **0.5倍以下** → `result.caution` に「⚠️ 膠着相場：エントリーは様子見推奨」
+  - 正常範囲 → スコアに +5（適度なボラは良いサイン）
+- [x] ATR値をAPIレスポンスに含める（`atr` フィールド追加）
+
+**対象ファイル:** `ono_estimator/indicators/technical.py`, `ono_estimator/core/engine.py`
+
+---
+
+### 2-4. 鉄板パターンを追加（IronPatternMatcher拡張）
+
+現状2種類（`#BB_MACD_Cross`, `#MA200_BB_Reversal`）を以下に拡張:
+
+- [x] **`#RSI_Divergence`**: 価格が高値更新 or 安値更新しているのにRSIが逆方向 → ダイバージェンス
+  - 直近10本のclose/RSIで判定
+- [x] **`#MA_Cluster`**: MA25・MA75・MA200が±0.5%以内に集まっている → 大きな動きの予兆
+  - `is_cluster = abs(ma25-ma75)/ma75 < 0.005 and abs(ma75-ma200)/ma200 < 0.005`
+- [x] **`#DoubleTop` / `#DoubleBottom`**: スイング高値/安値が2回ほぼ同じ価格（±0.3%）に達した
+  - `DowTheory.calculate_swing_high_low()` の結果を利用
+- [x] **`#HeadAndShoulders` / `#InverseHeadAndShoulders`**: 三尊・逆三尊
+  - スイング高値3点の中央が最も高い（or 低い）場合に検出
+
+**対象ファイル:** `ono_estimator/filters/pattern_matcher.py`
+
+---
+
+## 🟢 PHASE 3 — 実用性・UX向上（低優先）
+
+### 3-1. TP/SL（利確・損切り）の自動計算
+
+**実装内容:**
+- [x] ATR(14) × 1.5 = SL幅、ATR(14) × 3.0 = TP幅として自動計算
+- [x] `PredictionResult` に `tp_price`, `sl_price`, `risk_reward` フィールドを追加
+- [x] Geminiプロンプトに現在のSL/TP候補を渡し、AIが妥当性を評価するよう修正
+- [x] Discordの通知メッセージに `TP: {tp} / SL: {sl} / RR: 1:{rr}` を追記
+
+**対象ファイル:** `ono_estimator/core/engine.py`, `ono_estimator/core/models.py`, `ono_estimator/core/notifier.py`, `ono_estimator/core/ai_analyzer.py`
+
+---
+
+### 3-2. 複数銘柄の相関フィルター
+
+**実装内容:**
+- [x] `ono_estimator/filters/correlation_filter.py` を新規作成
+- [x] 相関ペア定義:
+  - EURUSD ↔ EURJPY（同方向なら確度UP）
+  - USDJPY ↔ GOLD（逆方向なら確度UP：ドル強弱の確認）
+  - AUDJPY ↔ JP225（同方向なら確度UP：リスクオン・オフ）
+- [x] `price_cache` または `system_state` を参照して相関ペアの方向を確認
+- [x] 相関が一致 → スコアに +10 + `#CorrelationConfirmed` タグ
+
+**対象ファイル:** `ono_estimator/filters/correlation_filter.py`（新規）, `api/server.py`
+
+---
+
+### 3-3. バックテスト勝率をダッシュボードに表示
+
+**実装内容:**
+- [x] `SupabaseClient` に `get_performance_by_symbol()` メソッドを追加
+  - 銘柄別・システム別の勝率（勝ち数/総数）を集計して返す
+- [x] `/api/performance` エンドポイントを追加
+- [x] フロントの `Dashboard.tsx` に簡易勝率テーブルを追加
+  - 列: 銘柄 / 総シグナル数 / 勝率 / 平均スコア
+
+**対象ファイル:** `ono_estimator/core/database.py`, `api/server.py`, `frontend/src/components/Dashboard.tsx`
+
+---
+
+## 実装優先度まとめ
+
+| フェーズ | タスク | 担当ファイル数 | 優先度 |
+|---|---|---|---|
+| **PHASE 0** | AI分析待機中バグ修正 | 2 | 🚨 今すぐ |
+| **PHASE 1** | LW条件緩和 | 1 | 🔴 最高 |
+| **PHASE 1** | GenericSystem新規作成 | 3 | 🔴 最高 |
+| **PHASE 1** | バンドウォーク追従 | 2 | 🔴 高 |
+| **PHASE 2** | 時間帯フィルター | 3 | 🟡 中 |
+| **PHASE 2** | キーレベル検出 | 3 | 🟡 中 |
+| **PHASE 2** | ATRボラティリティ | 2 | 🟡 中 |
+| **PHASE 2** | 鉄板パターン追加 | 1 | 🟡 中 |
+| **PHASE 3** | TP/SL自動計算 | 4 | 🟢 低 |
+| **PHASE 3** | 相関フィルター | 2 | 🟢 低 |
+| **PHASE 3** | 勝率ダッシュボード | 3 | 🟢 低 |
+
+---
+
+## Claude Codeへの引き継ぎ注意事項
+
+- `engine.py` の銘柄分岐（`if symbol == "USDJPY"`）は将来的にシステムへのタグ付け方式に変更を推奨
+- `system_state` はグローバル変数なので並列書き込みに注意（`asyncio.Lock` の追加を検討）
+- Gemini APIは無料枠で `MAX_GEMINI_PER_MINUTE = 3` に制限されているため、新しいAPI呼び出しは既存のスロットリング内に収める
+- 新規フィルタークラスは必ず `ono_estimator/filters/__init__.py` にエクスポートを追加すること

@@ -281,6 +281,10 @@ class GeminiAnalyzer:
             weekly_trend    = es.get("weekly_trend", "N/A")
             weekly_ma200    = es.get("weekly_ma200", "N/A")
 
+            # ── 3-2: 相関フィルター ──
+            corr_caution    = es.get("corr_caution", "")
+            corr_tags       = es.get("corr_tags", [])
+
             # ── スキャルピング戦略指標（H-5〜H-15）──
             liq_signal      = es.get("liq_signal", "NONE")
             liq_bull_sweep  = es.get("liq_bull_sweep", False)
@@ -384,12 +388,38 @@ class GeminiAnalyzer:
             else:
                 self_learning = "学習データ蓄積中。現在の市場データのみで判断。"
 
+            # ── T-01: ReasoningEngine の思考コンテキストを取得 ──
+            thinking_ctx = ""
+            entry_decision = es.get("entry_decision", "WAIT")
+            thinking_reason = es.get("thinking_reason", "")
+            conflict_flags  = es.get("conflict_flags", [])
+            sl_hint  = float(es.get("sl_hint", 0.0))
+            tp_hint  = float(es.get("tp_hint", 0.0))
+            ichimoku_label = es.get("ichimoku_label", "")
+            saneki_ko    = es.get("saneki_ko", False)
+            saneki_gyaku = es.get("saneki_gyaku", False)
+
+            if entry_decision != "WAIT" or conflict_flags or thinking_reason:
+                conflict_str = "、".join(conflict_flags) if conflict_flags else "なし"
+                thinking_ctx = (
+                    f"\n【ReasoningEngine 4ステップ思考】\n"
+                    f"- 上位足: {es.get('step1_trend', '')}\n"
+                    f"- 中位足: {es.get('step2_range', '')}\n"
+                    f"- 下位足: {es.get('step3_entry_type', '')}\n"
+                    f"- 判断: {entry_decision} / 矛盾フラグ: {conflict_str}\n"
+                    f"- SL目処: {sl_hint:.5f} / TP目処: {tp_hint:.5f}\n"
+                    f"- 一目: {ichimoku_label}"
+                    + (" 【三役好転/最強BUY】" if saneki_ko else "")
+                    + (" 【三役逆転/最強SELL】" if saneki_gyaku else "")
+                    + "\n"
+                )
+
             lines = [
                 TRADER_SYSTEM_PROMPT,
                 "",
                 "=== 現在の市場データ ===",
                 f"銘柄: {symbol} | 現在値: {current_price} | セッション: {session}",
-                "",
+                thinking_ctx,
                 "【Step1: 200MAトレンド方向（1m足MA200）】",
                 f"- 1m足 MA200={ma200_1m:.3f} | 価格位置: {price_vs_ma200}（上=買いのみ・下=売りのみ）",
                 f"- 週足(W1)トレンド: {weekly_trend} | 週足MA200: 価格は{weekly_ma200}（上位トレンドフィルター）",
@@ -425,6 +455,7 @@ class GeminiAnalyzer:
                 f"- RSI 15m={rsi_15m:.1f} / 1H={rsi_1h:.1f} | 状態: {rsi_state}",
                 f"- ATR(1H,14): {atr_1h:.5f}（SL参考: ATR×0.5〜0.7以内）",
                 f"- Fear&Greed: {fear_greed}",
+                f"- 相関フィルター(3-2): {corr_caution if corr_caution else 'チェック対象外'}",
                 "",
                 "【過去の教訓（必ず参照してエントリー条件に反映）】",
                 self_learning,
@@ -518,9 +549,21 @@ class GeminiAnalyzer:
     def _call_api(self, prompt: str):
         if not self.model:
             return None
+        # 0-1: APIキー未設定チェック
+        if not os.environ.get("GEMINI_API_KEY"):
+            print("[Gemini] GEMINI_API_KEY未設定 — AI分析無効")
+            return None
         for attempt in range(7):
             try:
-                return self.model.generate_content(prompt)
+                # 0-1: タイムアウト設定（20秒）
+                return self.model.generate_content(
+                    prompt,
+                    generation_config=genai.types.GenerationConfig(
+                        candidate_count=1,
+                        max_output_tokens=1500,
+                    ),
+                    request_options={"timeout": 20},
+                )
             except Exception as e:
                 err = str(e)
                 if "404" in err:

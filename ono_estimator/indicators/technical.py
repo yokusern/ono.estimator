@@ -340,25 +340,80 @@ class TechnicalIndicators:
     # ── H-6: 一目均衡表（LWシステム） ────────────────────────────
     @staticmethod
     def ichimoku(high: pd.Series, low: pd.Series, close: pd.Series) -> dict:
+        """T-11: 一目均衡表 — 三役好転/逆転 + 雲厚・位置強化版"""
         tenkan   = (high.rolling(9).max()  + low.rolling(9).min())  / 2
         kijun    = (high.rolling(26).max() + low.rolling(26).min()) / 2
         senkou_a = ((tenkan + kijun) / 2).shift(26)
         senkou_b = ((high.rolling(52).max() + low.rolling(52).min()) / 2).shift(26)
-        chikou_now  = float(close.iloc[-1])
-        price_26ago = float(close.iloc[-27]) if len(close) > 27 else float(close.iloc[0])
+
+        # 現在値
+        price_now   = float(close.iloc[-1])
+        tenkan_now  = float(tenkan.iloc[-1])
+        kijun_now   = float(kijun.iloc[-1])
+
+        # 遅行スパン: 現在足のclose vs 26本前の価格
+        price_26ago = float(close.iloc[-27]) if len(close) > 27 else price_now
+        price_27ago = float(close.iloc[-28]) if len(close) > 28 else price_now
         chikou_prev = float(close.iloc[-2])
-        price_27ago = float(close.iloc[-28]) if len(close) > 28 else float(close.iloc[0])
-        if chikou_now > price_26ago and chikou_prev <= price_27ago:   cross = "BULLISH"
-        elif chikou_now < price_26ago and chikou_prev >= price_27ago: cross = "BEARISH"
-        else:                                                          cross = "NONE"
-        sa = float(senkou_a.iloc[-1]) if not pd.isna(senkou_a.iloc[-1]) else chikou_now
-        sb = float(senkou_b.iloc[-1]) if not pd.isna(senkou_b.iloc[-1]) else chikou_now
-        ct = max(sa, sb); cb_val = min(sa, sb); price = chikou_now
+
+        # 遅行スパンクロス判定
+        if price_now > price_26ago and chikou_prev <= price_27ago:
+            chikou_cross = "BULLISH"
+        elif price_now < price_26ago and chikou_prev >= price_27ago:
+            chikou_cross = "BEARISH"
+        else:
+            # 遅行スパン位置だけ返す
+            chikou_cross = "ABOVE" if price_now > price_26ago else "BELOW" if price_now < price_26ago else "NONE"
+
+        # 雲
+        sa = float(senkou_a.iloc[-1]) if not pd.isna(senkou_a.iloc[-1]) else price_now
+        sb = float(senkou_b.iloc[-1]) if not pd.isna(senkou_b.iloc[-1]) else price_now
+        cloud_top = max(sa, sb)
+        cloud_bot = min(sa, sb)
+        cloud_thickness = cloud_top - cloud_bot
+
+        if price_now > cloud_top:
+            price_vs_cloud = "ABOVE"
+        elif price_now < cloud_bot:
+            price_vs_cloud = "BELOW"
+        else:
+            price_vs_cloud = "INSIDE"
+
+        # 転換線 vs 基準線クロス
+        tenkan_cross = "BULLISH" if tenkan_now > kijun_now else "BEARISH" if tenkan_now < kijun_now else "NONE"
+
+        # 三役好転: 価格が雲の上 + 遅行スパンが26本前価格より上 + 転換線>基準線
+        saneki_ko = (price_vs_cloud == "ABOVE"
+                     and price_now > price_26ago
+                     and tenkan_now > kijun_now)
+        # 三役逆転: 価格が雲の下 + 遅行スパンが26本前価格より下 + 転換線<基準線
+        saneki_gyaku = (price_vs_cloud == "BELOW"
+                        and price_now < price_26ago
+                        and tenkan_now < kijun_now)
+
+        if saneki_ko:
+            status_label = "三役好転"
+        elif saneki_gyaku:
+            status_label = "三役逆転"
+        elif price_vs_cloud == "ABOVE" and tenkan_now > kijun_now:
+            status_label = "準好転（雲上+転換線優勢）"
+        elif price_vs_cloud == "BELOW" and tenkan_now < kijun_now:
+            status_label = "準逆転（雲下+基準線優勢）"
+        else:
+            status_label = "中立"
+
         return {
-            "chikou_cross":   cross,
-            "price_vs_cloud": "ABOVE" if price > ct else "BELOW" if price < cb_val else "INSIDE",
-            "cloud_top": ct, "cloud_bot": cb_val,
-            "tenkan": float(tenkan.iloc[-1]), "kijun": float(kijun.iloc[-1]),
+            "chikou_cross":   chikou_cross,
+            "price_vs_cloud": price_vs_cloud,
+            "cloud_top":      cloud_top,
+            "cloud_bot":      cloud_bot,
+            "cloud_thickness": cloud_thickness,
+            "tenkan":         tenkan_now,
+            "kijun":          kijun_now,
+            "tenkan_cross":   tenkan_cross,
+            "saneki_ko":      saneki_ko,
+            "saneki_gyaku":   saneki_gyaku,
+            "status_label":   status_label,
         }
 
     # ── H-7: UPLOWバンド（SVシステム）MA14 ± 1σ/2σ/3σ ──────────

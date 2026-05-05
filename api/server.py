@@ -177,6 +177,26 @@ def _corr_filter_allow(sym: str, score: float) -> bool:
 _sqi_loss_streak: dict = {sym: 0 for sym in SYMBOLS}
 _sqi_total_scored = 0
 
+# ─── T-07: 日次エントリーカウンター ────────────────────────────
+TARGET_DAILY_ENTRIES = 10
+_entry_log: dict = {sym: [] for sym in SYMBOLS}
+
+def log_entry_signal(symbol: str) -> None:
+    """エントリーシグナル発生時に記録する。"""
+    today = datetime.utcnow().date()
+    _entry_log[symbol] = [t for t in _entry_log[symbol] if t.date() == today]
+    _entry_log[symbol].append(datetime.utcnow())
+
+def get_daily_progress() -> dict:
+    """今日の銘柄別エントリー試行回数と合計を返す。"""
+    today = datetime.utcnow().date()
+    counts = {
+        SYM_SHORT.get(sym, sym): len([t for t in _entry_log[sym] if t.date() == today])
+        for sym in SYMBOLS
+    }
+    total = sum(counts.values())
+    return {"counts": counts, "total": total, "target": TARGET_DAILY_ENTRIES}
+
 # ─── Services ──────────────────────────────────────────────────
 fetcher     = HybridDataFetcher()
 engine_v2   = ONOPredictionEngineV2() if _V2 else None
@@ -225,14 +245,17 @@ def get_active_session(utc_hour: int) -> str:
     return "Off-hours"
 
 def _needs_ai(sym: str) -> bool:
-    """H-1: 時間経過 or スコアが±10以上変化した場合にAI呼び出し"""
+    """H-1: 時間経過 or スコアが±10以上変化した場合にAI呼び出し。
+    0-1: 5分以上更新がない場合は強制再実行（無限スキップ防止）"""
     now = time.time()
     last = last_ai_call.get(sym, 0)
     current_score = system_state[sym][ANALYSIS_TF].get("score", 0)
     score_changed = abs(current_score - last_ai_score.get(sym, 0)) >= 10
+    # 0-1: 5分以上更新なし → 強制フォールバック
+    stale = (now - last) > 300
     if _is_crypto(sym): return True
-    if _is_market_open(sym): return (now - last) > 58 or score_changed
-    return (now - last) > 3600 or score_changed
+    if _is_market_open(sym): return (now - last) > 58 or score_changed or stale
+    return (now - last) > 3600 or score_changed or stale
 
 def _can_gemini() -> bool:
     now = time.time()
@@ -629,7 +652,7 @@ def _build_engine_signals(sym: str, tf_results: dict, df_store: dict) -> dict:
 
     session_str = get_active_session(datetime.utcnow().hour)
 
-    return {
+    _signals = {
         "current_price":    price,
         "session":          session_str,
         # BB
@@ -742,7 +765,68 @@ def _build_engine_signals(sym: str, tf_results: dict, df_store: dict) -> dict:
         # L-6: 週足トレンド
         "weekly_trend":         weekly_trend,
         "weekly_ma200":         weekly_ma200_position,
+        # T-01/T-06: ReasoningEngine 思考結果 (後で上書きされる)
+        "entry_decision":       "WAIT",
+        "step1_trend":          "",
+        "step2_range":          "",
+        "step3_entry_type":     "",
+        "conflict_flags":       [],
     }
+
+    # ── T-06: ReasoningEngine で4ステップ思考 ────────────────────
+    try:
+        from ono_estimator.core.reasoning_engine import ReasoningEngine as _RE
+        _re = _RE()
+        _thinking = _re.think(df_store, sym)
+        # エンジンシグナルに思考結果を上書き
+        base_ret = {
+            "entry_decision":   _thinking.entry_decision,
+            "confidence_level": _thinking.confidence,
+            "conflict_flags":   _thinking.conflict_flags,
+            "step1_trend":      _thinking.upper.reason,
+            "step2_range":      _thinking.mid.reason,
+            "step3_entry_type": _thinking.trigger.reason,
+            "sl_hint":          _thinking.sl_hint,
+            "tp_hint":          _thinking.tp_hint,
+            "thinking_reason":  _thinking.entry_reason,
+            # 一目均衡表強化 (T-11)
+            "saneki_ko":        _thinking.upper.ichimoku_status == "三役好転",
+            "saneki_gyaku":     _thinking.upper.ichimoku_status == "三役逆転",
+            "ichimoku_label":   _thinking.upper.ichimoku_status,
+        }
+        # ── ichimoku_result も直接フィールドで更新 ──
+        if df1h is not None and len(df1h) >= 60:
+            try:
+                from ono_estimator.indicators.technical import TechnicalIndicators as _TI
+                ichi = _TI.ichimoku(df1h["high"], df1h["low"], df1h["close"])
+                base_ret["saneki_ko"]    = ichi.get("saneki_ko", False)
+                base_ret["saneki_gyaku"] = ichi.get("saneki_gyaku", False)
+                base_ret["ichimoku_label"] = ichi.get("status_label", "")
+                base_ret["tenkan_cross"] = ichi.get("tenkan_cross", "NONE")
+                base_ret["cloud_thickness"] = ichi.get("cloud_thickness", 0.0)
+            except Exception:
+                pass
+    except Exception as _re_err:
+        base_ret = {}
+        print(f"[ReasoningEngine] {sym}: {_re_err}")
+
+    # T-06: ReasoningEngine結果で上書き
+    _signals.update(base_ret)
+
+    # 3-2: 複数銘柄相関フィルター
+    try:
+        from ono_estimator.filters.correlation_filter import check_correlation
+        corr = check_correlation(sym, system_state, ANALYSIS_TF)
+        _signals["corr_score_bonus"] = corr.get("score_bonus", 0)
+        _signals["corr_tags"]        = corr.get("tags", [])
+        _signals["corr_caution"]     = corr.get("caution", "")
+    except Exception as _corr_err:
+        _signals["corr_score_bonus"] = 0
+        _signals["corr_tags"]        = []
+        _signals["corr_caution"]     = ""
+        print(f"[CorrelationFilter] {sym}: {_corr_err}")
+
+    return _signals
 
 
 # ─── コア分析（blocking） ───────────────────────────────────────
@@ -926,7 +1010,17 @@ async def ai_loop():
     """Gemini分析・通知・DemoTraderエントリー専用。"""
     await asyncio.sleep(30)  # fast_loopが1周するのを待つ
     while True:
-        for sym in SYMBOLS:
+        # T-08: 優先キュー — WAIT以外(BUY/SELL判断あり)の銘柄を先に処理
+        def _ai_priority(sym: str) -> int:
+            engine_signals = system_state[sym].get("_engine_signals") or {}
+            entry_decision = engine_signals.get("entry_decision", "WAIT")
+            if entry_decision in ("BUY", "SELL"):
+                return 0   # 高優先
+            score = system_state[sym][ANALYSIS_TF].get("score", 0)
+            return 1 if abs(score) >= 60 else 2
+
+        ordered_symbols = sorted(SYMBOLS, key=_ai_priority)
+        for sym in ordered_symbols:
             try:
                 if not _needs_ai(sym):
                     continue
@@ -951,6 +1045,12 @@ async def ai_loop():
                     )
                 )
                 if not ai_data:
+                    # 0-1: 失敗時もlast_ai_callを更新して無限スキップを防止
+                    last_ai_call[sym] = time.time()
+                    # APIキー未設定の場合は状態に明示
+                    if not os.environ.get("GEMINI_API_KEY"):
+                        for tf in TIMEFRAMES:
+                            system_state[sym][tf]["ai_text"] = "APIキー未設定のためAI分析は無効です"
                     await asyncio.sleep(15)
                     continue
 
@@ -1023,6 +1123,10 @@ async def ai_loop():
 
                 # L-2: Correlation Guard（同グループ内重複通知抑制）
                 notify_allowed = _corr_filter_allow(sym, score)
+
+                # T-07: エントリーシグナル記録
+                if should_notify or abs(score) >= notify_threshold or (ai_data.get("direction", "NONE") not in ("NONE", "WAIT", "")):
+                    log_entry_signal(sym)
 
                 # H-12: AI熟練トレーダー通知
                 if not is_locked and notify_allowed and (should_notify or abs(score) >= notify_threshold or prob >= 75):
@@ -1622,6 +1726,16 @@ def performance_summary():
         return {"error": str(e), "win_rate": 0, "total_trades": 0}
 
 
+@app.get("/api/performance")
+def performance_by_symbol():
+    """3-3: 銘柄別パフォーマンス（総シグナル数・勝率・平均スコア）"""
+    try:
+        rows = db.get_performance_by_symbol()
+        return {"data": rows, "count": len(rows)}
+    except Exception as e:
+        return {"data": [], "count": 0, "error": str(e)}
+
+
 @app.get("/api/confluence/{symbol}")
 def confluence(symbol: str):
     """MTFコンフルエンス（全TF方向一致スコア）"""
@@ -1698,6 +1812,12 @@ async def backtest_evaluate():
         return {"evaluated": evaluated, "summary": perf}
     except Exception as e:
         return {"error": str(e), "evaluated": 0}
+
+
+@app.get("/api/daily/entries")
+def daily_entries():
+    """T-07: 今日のエントリー試行カウント"""
+    return get_daily_progress()
 
 
 @app.get("/api/daily/status")

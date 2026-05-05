@@ -226,6 +226,165 @@ function LayerBreakdown({ layers }: { layers: Record<string, number> }) {
   );
 }
 
+// ─── T-09: 思考プロセスカード ─────────────────────────────────
+function ThinkingProcessCard({ d, symbol }: { d: any; symbol: string }) {
+  const step1 = d?.step1_trend || "";
+  const step2 = d?.step2_range || "";
+  const step3 = d?.step3_entry_type || d?.entry_type || "";
+  const decision = (d?.direction || d?.status || "WAIT").toUpperCase();
+  const sl = d?.sl || 0;
+  const tp1 = d?.tp1 || 0;
+  const conflict = d?.conflict_flags || [];
+  const confidence = d?.signal_quality || d?.confidence || "LOW";
+
+  const decColor = decision.includes("BUY") ? "#22d3ee"
+    : decision.includes("SELL") ? "#fb7185" : "#6b7280";
+  const confColor = confidence === "HIGH" ? "#22d3ee"
+    : confidence === "MEDIUM" ? "#f59e0b" : "#6b7280";
+
+  const rows: { label: string; icon: string; value: string; color?: string }[] = [
+    { label: "上位足 (4h/1h)", icon: "🔭", value: step1 || "分析待機中", color: "#94a3b8" },
+    { label: "中位足 (15m)", icon: "🎯", value: step2 || "ゾーン確認中", color: "#94a3b8" },
+    { label: "下位足 (5m)", icon: "⚡", value: step3 || "トリガー待機中", color: "#94a3b8" },
+    {
+      label: "総合判断",
+      icon: decision.includes("BUY") ? "✅" : decision.includes("SELL") ? "🔻" : "⏸",
+      value: `${decision} / 信頼度:${confidence}`,
+      color: decColor,
+    },
+  ];
+
+  return (
+    <div style={{
+      background: "rgba(255,255,255,0.02)",
+      border: "1px solid rgba(255,255,255,0.07)",
+      borderRadius: 16, padding: 16, marginBottom: 0,
+    }}>
+      <div style={{ fontSize: 11, color: "#64748b", letterSpacing: 1, marginBottom: 12 }}>
+        THINKING PROCESS — {symbol}
+      </div>
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={i} style={{
+              borderBottom: i < rows.length - 1 ? "1px solid rgba(255,255,255,0.05)" : "none",
+            }}>
+              <td style={{ padding: "9px 8px 9px 0", width: 110, verticalAlign: "top" }}>
+                <div style={{ fontSize: 11, color: "#64748b" }}>{row.icon} {row.label}</div>
+              </td>
+              <td style={{ padding: "9px 0", verticalAlign: "top" }}>
+                <div style={{ fontSize: 12, color: row.color || "#cbd5e1", lineHeight: 1.5, wordBreak: "break-word" }}>
+                  {row.value}
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {conflict.length > 0 && (
+        <div style={{
+          marginTop: 10, background: "rgba(251,113,133,0.08)",
+          border: "1px solid rgba(251,113,133,0.2)", borderRadius: 8, padding: "8px 10px",
+        }}>
+          <span style={{ fontSize: 11, color: "#fb7185", fontWeight: 700 }}>⚠ 矛盾フラグ: </span>
+          <span style={{ fontSize: 11, color: "#fca5a5" }}>{conflict.join(" / ")}</span>
+        </div>
+      )}
+      {(sl > 0 || tp1 > 0) && (
+        <div style={{ marginTop: 10, display: "flex", gap: 12 }}>
+          {sl > 0 && (
+            <div style={{ fontSize: 11, color: "#fb7185" }}>
+              SL: <span style={{ fontWeight: 700 }}>{sl.toFixed(3)}</span>
+            </div>
+          )}
+          {tp1 > 0 && (
+            <div style={{ fontSize: 11, color: "#22d3ee" }}>
+              TP: <span style={{ fontWeight: 700 }}>{tp1.toFixed(3)}</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── T-10: 日次エントリー進捗バー ────────────────────────────
+function DailyEntryProgress({ raw }: { raw: any }) {
+  const total  = raw?.total ?? 0;
+  const target = raw?.target ?? 10;
+  const pct    = Math.min(100, Math.round((total / target) * 100));
+  const col    = pct >= 100 ? "#22d3ee" : pct >= 60 ? "#f59e0b" : "#a78bfa";
+  const filled = Math.round(pct / 10);
+
+  return (
+    <div style={{
+      background: "rgba(255,255,255,0.02)",
+      border: "1px solid rgba(255,255,255,0.07)",
+      borderRadius: 12, padding: "12px 16px",
+    }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <span style={{ fontSize: 11, color: "#64748b", letterSpacing: 1 }}>TODAY&apos;S ENTRIES</span>
+        <span style={{ fontSize: 12, fontWeight: 700, color: col }}>{total}/{target}回</span>
+      </div>
+      <div style={{ display: "flex", gap: 3 }}>
+        {Array.from({ length: 10 }).map((_, i) => (
+          <div key={i} style={{
+            flex: 1, height: 6, borderRadius: 3,
+            background: i < filled ? col : "rgba(255,255,255,0.06)",
+            transition: "background 0.4s ease",
+          }} />
+        ))}
+      </div>
+      <div style={{ marginTop: 6, fontSize: 10, color: "#475569" }}>
+        目標 {target}エントリー / 今日 {pct}%達成
+      </div>
+    </div>
+  );
+}
+
+// ─── 3-3: 銘柄別パフォーマンステーブル ──────────────────────────
+function SymbolPerformanceTable({ raw }: { raw: any }) {
+  const rows: any[] = raw?.data ?? [];
+  if (rows.length === 0) return null;
+  return (
+    <div style={{
+      background: "rgba(255,255,255,0.02)",
+      border: "1px solid rgba(255,255,255,0.06)",
+      borderRadius: 12, padding: "12px 16px", marginTop: 12,
+    }}>
+      <div style={{ fontSize: 11, color: "#64748b", letterSpacing: 1, marginBottom: 10 }}>SYMBOL PERFORMANCE</div>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+        <thead>
+          <tr style={{ color: "#475569" }}>
+            <th style={{ textAlign: "left",  paddingBottom: 6 }}>銘柄</th>
+            <th style={{ textAlign: "right", paddingBottom: 6 }}>シグナル</th>
+            <th style={{ textAlign: "right", paddingBottom: 6 }}>採点</th>
+            <th style={{ textAlign: "right", paddingBottom: 6 }}>勝率</th>
+            <th style={{ textAlign: "right", paddingBottom: 6 }}>平均スコア</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r: any) => {
+            const wr = r.win_rate;
+            const wrCol = wr == null ? "#64748b" : wr >= 60 ? "#22d3ee" : wr >= 50 ? "#f59e0b" : "#f87171";
+            return (
+              <tr key={r.symbol} style={{ borderTop: "1px solid rgba(255,255,255,0.04)" }}>
+                <td style={{ paddingTop: 5, paddingBottom: 5, color: "#94a3b8" }}>{r.symbol}</td>
+                <td style={{ textAlign: "right", color: "#64748b" }}>{r.total}</td>
+                <td style={{ textAlign: "right", color: "#64748b" }}>{r.scored}</td>
+                <td style={{ textAlign: "right", fontWeight: 700, color: wrCol }}>
+                  {wr != null ? `${wr}%` : "---"}
+                </td>
+                <td style={{ textAlign: "right", color: "#94a3b8" }}>{r.avg_score}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // ─── Asset Card ───────────────────────────────────────────────
 function AssetCard({ symbol, d, onClick, active }: {
   symbol: string; d: any; onClick: () => void; active: boolean
@@ -372,6 +531,18 @@ export default function Dashboard() {
     { revalidateOnFocus: false, refreshInterval: 90000 }
   );
 
+  // T-10: 日次エントリーカウンター
+  const { data: dailyEntriesRaw } = useSWR(
+    `${API_URL}/api/daily/entries`, fetcher,
+    { ...swrOpts, refreshInterval: 60000 }
+  );
+
+  // 3-3: 銘柄別パフォーマンス
+  const { data: perfBySymRaw } = useSWR(
+    `${API_URL}/api/performance`, fetcher,
+    { revalidateOnFocus: false, refreshInterval: 300000 }
+  );
+
   const isConnected = !error && !isLoading;
   // Render が停止している場合は Supabase キャッシュを使用
   const effectiveData = error && supabaseCacheRaw?.data ? supabaseCacheRaw : data;
@@ -393,7 +564,7 @@ export default function Dashboard() {
   const layers = current?.layers || {};
   const signals = current?.signals || [];
   const warnings = current?.warnings || [];
-  const aiText = current?.ai_text || "AI分析待機中...";
+  const aiText = current?.ai_text || "AIが分析中です（初回は最大2分かかる場合があります）";
   const awarenessText = current?.awareness_text || "";
   const isRange = current?.is_range ?? false;
   const entryType = current?.entry_type || "NONE";
@@ -1061,7 +1232,7 @@ export default function Dashboard() {
                         whiteSpace: "pre-wrap", fontFamily: "'Noto Sans JP', sans-serif",
                         opacity: isRange ? 0.5 : 1,
                       }}>
-                        {aiText || "AI分析待機中..."}
+                        {aiText || "AIが分析中です（初回は最大2分かかる場合があります）"}
                       </div>
                       {awarenessText && (
                         <div style={{
@@ -1079,12 +1250,20 @@ export default function Dashboard() {
                           </div>
                         </div>
                       )}
+                      {/* T-09: 思考プロセスカード */}
+                      <div style={{ marginTop: 16 }}>
+                        <ThinkingProcessCard d={current} symbol={activeSymbol} />
+                      </div>
                     </>
                   )}
                 </div>
               </div>
 
               <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                {/* T-10: 日次エントリー進捗バー */}
+                <DailyEntryProgress raw={dailyEntriesRaw} />
+                {/* 3-3: 銘柄別パフォーマンステーブル */}
+                <SymbolPerformanceTable raw={perfBySymRaw} />
                 <div style={{
                   background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
                   borderRadius: 16, padding: 18,
