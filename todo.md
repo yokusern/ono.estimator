@@ -1,505 +1,930 @@
-# ONO Estimator Ultra — 完全版 TODO
+# ONO Estimator Ultra — 分析精度改善 TODO
 
-> **役割分担**
-> - **このチャット（Claude）**: プロンプト設計・分析・方針考案
-> - **Claude Code**: 実際のコード実装
-> - ステータス: `[ ]` 未着手 / `[~]` 進行中 / `[x]` 完了
->
-> **基本方針**
-> - 積極的にエントリーシグナルを出す（失敗してもいい、量を出す）
-> - 失敗も含めて全記録し、自己分析・改善のループを回す
-> - 完全自分専用（ユーザー管理不要）
-> - ロットはユーザー入力、価格予測はエンジン＋AI総合判断
+## 問題の本質
 
----
+現在のエンジンは **全取得データ（5M足で最大17,000本＝60日分）** を使って
+各レイヤーのスコア計算をしている。
+これにより指標が長期平均に引っ張られ、狙うpipsに見合った時間感覚で
+判断できず、エントリーシグナルが発火しない。
 
-## 🚨 PHASE A — エントリー判断パネル（最優先・新機能）
+SV・LW通知が来ないのも同根。検出対象のS/Rラインが「数ヶ月前の節目」になり、
+直近の小さなレンジブレイクが拾えていない。
 
-### A-1. エントリースタイル判定（スキャルピング / デイトレード / スイング）
-
-**概要:**
-現在の分析結果から、そのシグナルがどのトレードスタイルに向いているかを自動判定して表示する。
-
-**実装内容:**
-- [x] `trade_style_detector.py` を新規作成（スキャルプ/デイ/スイング判定）
-- [x] 各スタイルのスコアを算出し「メインスタイル」+「サブスタイル」を返す
-- [x] `Dashboard.tsx` にスタイルバッジを表示（メイン・AIタブ両方）
-- [x] スタイルごとの期待保有時間を表示
-
-**対象ファイル:** `api/server.py`, `ono_estimator/core/ai_analyzer.py`, `frontend/src/components/Dashboard.tsx`
+**目標: pipsターゲットに応じた最適な分析ウィンドウで判断できるようにする。**
+スキャルピング（5〜10pips）からスイングトレード（200pips〜）まで、
+pipsターゲットを切り替えるだけで全スタイルに対応する。
+メインはスキャルピング〜デイトレード（10〜30pips）だが、
+それに限定はしない。
+チャート表示はフルデータのまま変えない。分析エンジンだけが直近N本で判断する。
 
 ---
 
-### A-2. 必要資金の目安を自動計算
+## トレードスタイルとpipsの対応（設計の根幹）
 
-**概要:**
-現在の価格・ATR・推奨ロット枠から、エントリーに必要な最低証拠金の目安を算出する。
+| スタイル | pipsターゲット | 主軸TF | 見る本数 | 保有時間目安 |
+|---------|---------------|--------|---------|------------|
+| スキャルピング | 5〜10 pips | 1M〜5M | 24〜36本 | 数分〜30分 |
+| **デイトレード（メイン）** | **15〜30 pips** | **5M〜15M** | **32〜48本** | **30分〜2時間** |
+| ショートスイング | 50〜100 pips | 15M〜1H | 24〜48本 | 数時間〜1日 |
+| スイングトレード | 150〜300 pips | 1H〜4H | 24〜48本 | 1日〜1週間 |
+| ポジショントレード | 500 pips〜 | 4H〜1D | 20〜30本 | 数週間〜 |
 
-**実装内容:**
-- [x] `capital_calculator.py` を新規作成（証拠金/SL損失/推奨Lot計算）
-- [x] `/api/capital/calc` エンドポイント追加
-- [x] `Dashboard.tsx` に資金目安パネルを表示（ロット計算強化）
-
-**対象ファイル:** `ono_estimator/core/capital_calculator.py`（新規）, `api/server.py`, `frontend/src/components/Dashboard.tsx`
-
----
-
-### A-3. ロット入力 → SL幅・TP目標・RR比を自動計算
-
-**概要:**
-ユーザーがロット数を入力すると、そのロットに対するリスク・リターンをリアルタイム計算して表示する。
-
-**実装内容:**
-- [x] `Dashboard.tsx` にロット入力フォームを追加
-- [x] SL損失（円換算）・TP利益（円換算）・RR比をリアルタイム計算表示
-- [x] ロット・証拠金をlocalStorageに保存（次回引き継ぎ）
-- [x] 「このロットは資金の何%リスク」を表示
-
-**対象ファイル:** `frontend/src/components/Dashboard.tsx`
+**pipsターゲットを変えるだけで、分析ウィンドウ・時間足・Geminiプロンプトの
+指示内容がすべて自動で切り替わる。コードの変更は不要。**
 
 ---
 
-### A-4. 価格予測（目標価格・到達時間）の総合判断表示
+## 変更の原則
 
-**概要:**
-エンジン＋AI（Gemini）の複数手法を統合して「どこまで動くか」「何時間かかるか」を表示する。
-
-**実装内容:**
-- [x] `Dashboard.tsx` に「価格予測パネル」を表示（TP1/TP2/SL pips + RR + 保有時間）
-
-**対象ファイル:** `api/server.py`, `ono_estimator/core/ai_analyzer.py`, `frontend/src/components/Dashboard.tsx`
-
----
-
-### A-5. 「今すぐ入る vs 待て」判定
-
-**概要:**
-シグナルが出ていても「今すぐエントリーすべきか」「もう少し待った方がいいか」を判定して表示する。
-
-**実装内容:**
-- [x] `entry_timing_detector.py` 新規作成（NOW/WAIT/LIMIT判定）
-- [x] `entry_timing` フィールドをAPIレスポンスに追加
-- [x] `Dashboard.tsx` にバナー表示（🟢今すぐ/🟡待機/🔵指値）
-
-**対象ファイル:** `api/server.py`, `ono_estimator/core/engine_v2/master_engine.py`, `frontend/src/components/Dashboard.tsx`
+- `HybridDataFetcher` のデータ取得ロジック自体は **変更しない**
+- フルデータを取得した後に **分析用スライスを1箇所で挟む**
+- 各レイヤー（SMC / Technical / Momentum 等）は渡されたDFをそのまま処理する設計のため、
+  スライス済みDFを渡すだけで全レイヤーが自動的に「そのpipsに最適な範囲」で分析する
+- Geminiプロンプトにもスタイルとターゲットを自動で反映する
+- どのスタイルでも同じコードパスを通る（スタイルごとの分岐は作らない）
 
 ---
 
-### A-6. 8銘柄の「今日の優先度」ランキング表示
+## TASK 1: pipsターゲット連動型ウィンドウ設定（最優先）
 
-**概要:**
-監視中の8銘柄を「今チャンスがある順」にランキング表示し、どれに集中すべきか一目でわかるようにする。
+### 1-1. 設定ファイル追加
 
-**実装内容:**
-- [x] `opportunity_ranker.py` 新規作成（8銘柄のopportunity_score算出）
-- [x] `/api/ranking` エンドポイント追加
-- [x] `Dashboard.tsx` 上部に「注目銘柄TOP3」を常時表示（クリックで銘柄切り替え）
+**新規作成: `ono_estimator/core/pips_config.py`**
 
-**対象ファイル:** `api/server.py`（新エンドポイント）, `frontend/src/components/Dashboard.tsx`
+```python
+"""
+pipsターゲットから分析ウィンドウサイズを決定する設定。
+「表示はフルデータ、判断は直近N本」を実現する。
+"""
 
----
+# 銘柄ごとの1pip値
+PIP_DEFINITION = {
+    # FX（JPYペア）
+    "USDJPY": 0.01,
+    "EURJPY": 0.01,
+    "AUDJPY": 0.01,
+    # FX（ドルストレート）
+    "EURUSD": 0.0001,
+    # 貴金属
+    "XAUUSD": 0.1,      # GOLD
+    "XAGUSD": 0.001,    # SILVER
+    # 仮想通貨
+    "BTCUSD": 1.0,
+    # 株価指数
+    "JP225":  1.0,       # 日経225
+}
 
-### A-7. トレード中の「保有継続 / 利確 / 損切り変更」リアルタイム判断
+# yfinanceシンボル → 内部シンボル の対応
+SYMBOL_NORMALIZE = {
+    "USDJPY=X": "USDJPY",
+    "EURJPY=X": "EURJPY",
+    "AUDJPY=X": "AUDJPY",
+    "EURUSD=X": "EURUSD",
+    "GC=F":     "XAUUSD",
+    "SI=F":     "XAGUSD",
+    "BTC-USD":  "BTCUSD",
+    "^N225":    "JP225",
+}
 
-**概要:**
-エントリー後、現在保有中のポジションに対して「まだ持つべきか」をリアルタイムで判定する。
+# pipsターゲット → 分析ウィンドウ設定
+# primary: エントリー判断の主軸（スコア計算に使う）
+# confirm: 方向確認（primaryと同方向か見る）
+# context: 大局バイアス（参照のみ、スコアには低重みで反映）
+# style: トレードスタイル名（Geminiプロンプトで使用）
+WINDOW_CONFIG = {
+    # ── スキャルピング ──
+    5: {
+        "style":    "スキャルピング",
+        "primary":  {"tf": "1m",  "bars": 36},   # 36分分
+        "confirm":  {"tf": "5m",  "bars": 12},    # 1時間分
+        "context":  {"tf": "15m", "bars": 4},     # 1時間分
+        "hold_minutes": 5,
+    },
+    10: {
+        "style":    "スキャルピング",
+        "primary":  {"tf": "5m",  "bars": 24},   # 2時間分
+        "confirm":  {"tf": "15m", "bars": 6},     # 1.5時間分
+        "context":  {"tf": "1h",  "bars": 4},     # 4時間分
+        "hold_minutes": 30,
+    },
+    # ── デイトレード（メイン） ──
+    15: {
+        "style":    "デイトレード",
+        "primary":  {"tf": "5m",  "bars": 36},   # 3時間分
+        "confirm":  {"tf": "15m", "bars": 6},     # 1.5時間分
+        "context":  {"tf": "1h",  "bars": 6},     # 6時間分
+        "hold_minutes": 45,
+    },
+    20: {
+        "style":    "デイトレード",
+        "primary":  {"tf": "5m",  "bars": 48},   # 4時間分
+        "confirm":  {"tf": "15m", "bars": 8},     # 2時間分
+        "context":  {"tf": "1h",  "bars": 6},     # 6時間分
+        "hold_minutes": 60,
+    },
+    30: {
+        "style":    "デイトレード",
+        "primary":  {"tf": "15m", "bars": 32},   # 8時間分
+        "confirm":  {"tf": "1h",  "bars": 6},     # 6時間分
+        "context":  {"tf": "4h",  "bars": 4},     # 16時間分
+        "hold_minutes": 120,
+    },
+    # ── ショートスイング ──
+    50: {
+        "style":    "ショートスイング",
+        "primary":  {"tf": "15m", "bars": 48},   # 12時間分
+        "confirm":  {"tf": "1h",  "bars": 8},     # 8時間分
+        "context":  {"tf": "4h",  "bars": 6},     # 24時間分
+        "hold_minutes": 240,
+    },
+    100: {
+        "style":    "ショートスイング",
+        "primary":  {"tf": "1h",  "bars": 24},   # 1日分
+        "confirm":  {"tf": "4h",  "bars": 6},     # 24時間分
+        "context":  {"tf": "1d",  "bars": 5},     # 5日分
+        "hold_minutes": 480,
+    },
+    # ── スイングトレード ──
+    200: {
+        "style":    "スイングトレード",
+        "primary":  {"tf": "1h",  "bars": 48},   # 2日分
+        "confirm":  {"tf": "4h",  "bars": 10},    # 40時間分
+        "context":  {"tf": "1d",  "bars": 7},     # 7日分
+        "hold_minutes": 960,
+    },
+    300: {
+        "style":    "スイングトレード",
+        "primary":  {"tf": "4h",  "bars": 30},   # 5日分
+        "confirm":  {"tf": "1d",  "bars": 5},     # 5日分
+        "context":  {"tf": "1d",  "bars": 14},    # 2週間分
+        "hold_minutes": 2880,
+    },
+    # ── ポジショントレード ──
+    500: {
+        "style":    "ポジショントレード",
+        "primary":  {"tf": "4h",  "bars": 48},   # 8日分
+        "confirm":  {"tf": "1d",  "bars": 7},     # 1週間分
+        "context":  {"tf": "1d",  "bars": 20},    # 1ヶ月分
+        "hold_minutes": 7200,
+    },
+}
 
-**実装内容:**
-- [x] `/api/position/check` エンドポイント追加（HOLD/TAKE_PROFIT/MOVE_SL/EXIT_NOW判定）
-- [x] `Dashboard.tsx` に保有ポジション管理UIを追加（メインタブ右列）
+# デフォルト設定
+DEFAULT_TARGET_PIPS = 20
 
-**対象ファイル:** `api/server.py`（新エンドポイント `/api/position/check`）, `frontend/src/components/Dashboard.tsx`
 
----
+def get_pip_value(symbol: str) -> float:
+    """銘柄の1pip値を返す。未定義銘柄はFXメジャー扱い。"""
+    normalized = SYMBOL_NORMALIZE.get(symbol, symbol)
+    return PIP_DEFINITION.get(normalized, 0.0001)
 
-### A-8. 時間帯リスク警告の表示強化
 
-**概要:**
-現在の時間帯に関するリスク（スプレッド拡大・流動性低下・指標発表）を明示する。
+def get_window_config(target_pips: int = DEFAULT_TARGET_PIPS) -> dict:
+    """
+    pipsターゲットに最も近いウィンドウ設定を返す。
+    完全一致がなければ最も近いキーを選択する。
+    スキャル〜ポジショントレードまで自動対応。
+    """
+    if target_pips in WINDOW_CONFIG:
+        return WINDOW_CONFIG[target_pips]
+    # 最も近いキーを探す
+    keys = sorted(WINDOW_CONFIG.keys())
+    closest = min(keys, key=lambda k: abs(k - target_pips))
+    return WINDOW_CONFIG[closest]
 
-**実装内容:**
-- [x] `TimeRiskBar` コンポーネントを追加（深夜/週末/セッション切り替わり警告）
-- [x] ヘッダー下に帯状アラートバーとして常時表示
 
-**対象ファイル:** `ono_estimator/core/session_filter.py`, `frontend/src/components/Dashboard.tsx`
+def get_trade_style(target_pips: int = DEFAULT_TARGET_PIPS) -> str:
+    """pipsターゲットからトレードスタイル名を返す。"""
+    config = get_window_config(target_pips)
+    return config.get("style", "デイトレード")
+```
 
----
+### 1-2. 分析スライス関数の追加
 
-### A-9. エントリー根拠の「一言サマリー」表示
+**変更: `ono_estimator/core/hybrid_fetcher.py`**
 
-**概要:**
-「なぜ今エントリーなのか」を1〜2行の日本語で常に表示する。
+`get_analysis_df` メソッドを修正するか、新メソッド `get_analysis_df_windowed` を追加する。
 
-**実装内容:**
-- [x] Geminiプロンプトに `entry_reason_short`（50文字以内）を追加
-- [x] `Dashboard.tsx` の判断バナー直下に常に表示
+```python
+def get_analysis_df_windowed(self, symbol: str, timeframe: str, bars: int) -> Optional[pd.DataFrame]:
+    """
+    分析用: フルデータ取得 → インジケーター計算 → 末尾bars本だけ返す。
+    インジケーター計算はフルデータで行い（MA200等の精度を保つ）、
+    スコア計算用のDFだけをスライスして返す。
+    """
+    df = self.fetch_full_ohlcv(symbol, timeframe)
+    if df is None or df.empty:
+        return None
+    df_full = self.calculate_indicators(df.copy())
+    # インジケーターはフルデータで計算済み → 末尾だけ返す
+    return df_full.tail(bars)
+```
 
-**対象ファイル:** `ono_estimator/core/ai_analyzer.py`, `frontend/src/components/Dashboard.tsx`
-
----
-
-## 🔴 PHASE B — 積極エントリー化（高優先）
-
-### B-1. エントリー閾値を「積極モード」に引き下げ
-
-**概要:**
-現在の通知・エントリー判断条件が保守的すぎて、チャンスを逃している。
-失敗してもいいので、積極的にシグナルを出す方向に全体を調整する。
-
-**実装内容:**
-- [x] 通知条件を積極モードに変更（score>=35 OR prob>=60 OR confidence=HIGH）
-- [x] `AGGRESSIVE_MODE` 環境変数フラグを追加（デフォルトtrue）
-
-**対象ファイル:** `api/server.py`, `ono_estimator/core/notifier.py`
-
----
-
-### B-2. 見送りシグナルも「見送りログ」として記録
-
-**概要:**
-エントリーしなかった（閾値未満だった）シグナルも全て記録し、後から「あのとき入っていたら」を検証できるようにする。
-
-**実装内容:**
-- [x] Supabase に `missed_signals` テーブルを追加（SQL: todo.md末尾）
-- [x] `server.py` で閾値未満のシグナルも `missed_signals` に INSERT
-- [x] `/api/missed` エンドポイント追加
-- [x] `Dashboard.tsx` のHistoryタブに「見送りログ」セクションを追加
-- [ ] 6h/24h後の照合バッチ処理（将来実装）
-
-**対象ファイル:** `api/server.py`, `ono_estimator/core/database.py`, `frontend/src/components/Dashboard.tsx`
-
----
-
-### B-3. スキャナーの強化（全銘柄を常時監視してチャンス銘柄を自動サーフェス）
-
-**概要:**
-8銘柄を常時スキャンし、急なシグナル出現を即座に通知する。
-
-**実装内容:**
-- [ ] `scanner.py` のスキャン間隔を 5分 → 2分 に短縮（スキャルピング対応）
-- [ ] 短期（15m/30m足）専用のスキャン関数を追加
-- [ ] スキャン結果が `opportunity_score` 上位3銘柄に入ったら Discord 通知を強制送信
-- [ ] 「スキャルピング専用アラート」チャンネルを分離（DISCORD_WEBHOOK_SCALP を追加）
-
-**対象ファイル:** `ono_estimator/core/scanner.py`, `api/server.py`
-
----
-
-## 🟡 PHASE C — 自己分析・パフォーマンス管理（中優先）
-
-### C-1. トレード記録の自動蓄積
-
-**概要:**
-全エントリー（成功・失敗問わず）を自動記録し、後から振り返れる完全なトレード日誌を作る。
-
-**実装内容:**
-- [ ] Supabase の `trades` テーブルに以下を追加・整備:
-  ```
-  id, symbol, direction, trade_style (scalp/day/swing),
-  entry_price, sl, tp1, tp2, tp3,
-  lot, entry_time, exit_time, exit_price,
-  result (WIN/LOSS/BREAKEVEN/RUNNING),
-  pips, pnl_jpy, rr_actual,
-  entry_reason, exit_reason,
-  score_at_entry, probability_at_entry,
-  session (Tokyo/London/NY),
-  tags (手動タグ付け可能)
-  ```
-- [ ] `Dashboard.tsx` からワンクリックでトレード記録できるUIを追加
-  - エントリーボタン押下 → 自動でレコード作成
-  - 決済ボタン押下 → 決済価格・理由を入力して記録
-- [ ] デモトレーダー（`demo_trader.py`）と統合して自動記録も可能にする
-
-**対象ファイル:** `ono_estimator/core/database.py`, `api/server.py`, `frontend/src/components/Dashboard.tsx`
-
----
-
-### C-2. 自己分析ダッシュボード（パフォーマンス分析）
-
-**概要:**
-蓄積したトレード記録を元に、自分の強み・弱みを数値で把握できる分析画面を作る。
-
-**実装内容:**
-- [x] `/api/analytics` エンドポイント追加（スコア帯別・セッション別・銘柄別勝率）
-- [x] `Dashboard.tsx` のHistoryタブに分析セクションを追加
-
-**対象ファイル:** `api/server.py`（新エンドポイント）, `frontend/src/components/Analytics.tsx`（新規）
-
----
-
-### C-3. 感情バイアス・コンディション警告
-
-**概要:**
-判断が歪みやすい状態を検知して警告を出す。
-
-**実装内容:**
-- [x] `mental_guard.py` 新規作成（連敗/連勝/深夜/時間帯警告）
-- [x] `/api/mental_check` エンドポイント追加
-- [x] `Dashboard.tsx` ヘッダーにメンタルメーター常時表示（😊/😐/😰）
-
-**対象ファイル:** `api/server.py`, `ono_estimator/core/database.py`, `frontend/src/components/Dashboard.tsx`
-
----
-
-### C-4. AI自己学習ループ（シグナル精度の継続的改善）
-
-**概要:**
-過去のシグナルと実際の結果を照合し、どのシグナルが有効だったかをAIにフィードバックして精度を上げる。
-
-**実装内容:**
-- [ ] 既存の `ai_memory` テーブルを拡張
-  - シグナル出力時のコンテキスト（スコア・指標値）を丸ごと保存
-  - 結果（WIN/LOSS）を照合して紐付け
-- [ ] Geminiプロンプトに「直近10件の自分の勝敗パターン」を毎回含める
-  - 例: 「スコア40〜50のBUYシグナルは過去70%負け → より慎重に」
-- [ ] 週次で「今週の精度レポート」をDiscord通知
-- [ ] 「このシグナルパターンは過去何勝何敗」を `Dashboard.tsx` に表示
-
-**対象ファイル:** `ono_estimator/core/ai_analyzer.py`, `ono_estimator/core/database.py`, `api/server.py`
-
----
-
-### C-5. 週次・月次パフォーマンスサマリー
-
-**概要:**
-週・月単位でのパフォーマンスをまとめてDiscord通知 + ダッシュボード表示する。
-
-**実装内容:**
-- [x] `/api/summary/weekly` `/api/summary/monthly` エンドポイント追加
-- [ ] 毎週・毎月自動Discordサマリー通知（将来実装）
-
-**対象ファイル:** `api/server.py`, `ono_estimator/core/database.py`
+**重要ポイント:**
+- MA200やRSI等のインジケーターは **フルデータで計算した値** を使う
+  （tail(48)のデータでMA200を計算すると無意味になるため）
+- スライスするのは「スコア計算に使うローソク足の範囲」であり、
+  「インジケーター値の計算範囲」ではない
+- つまり: フルデータでインジケーター列を全て計算 → 末尾N行だけ切り出す
 
 ---
 
-## 🟢 PHASE D — 分析精度向上（中優先）
+## TASK 2: server_v2.py の分析ループ改修
 
-### D-1. 総合エントリー判断バナーの前面表示（既存改善）
+**変更: `api/server.py`（または `upgrade/server_v2.py`）**
 
-**実装内容:**
-- [x] `Dashboard.tsx` の銘柄カード最上部に「総合判断バナー」を追加
-- [x] BUY/SELL/WAITを大きく表示 + confidence + probability を併記
-- [x] 詳細分析は折りたたみに格納
+現在の `_analyze_symbol` 関数内で:
+```python
+df = fetcher.get_analysis_df(symbol, tf)  # フル期間を取得
+```
+としている部分を、以下に変更:
 
----
+```python
+from ono_estimator.core.pips_config import get_window_config, DEFAULT_TARGET_PIPS
 
-### D-2. エントリーシナリオ分岐の表示
+config = get_window_config(DEFAULT_TARGET_PIPS)  # デフォルト20pips
 
-**概要:**
-エントリー後に想定される3つのシナリオを事前に提示する。
+# primaryタイムフレームの場合: ウィンドウ適用
+if tf == config["primary"]["tf"]:
+    df = fetcher.get_analysis_df_windowed(symbol, tf, config["primary"]["bars"])
+elif tf == config["confirm"]["tf"]:
+    df = fetcher.get_analysis_df_windowed(symbol, tf, config["confirm"]["bars"])
+elif tf == config["context"]["tf"]:
+    df = fetcher.get_analysis_df_windowed(symbol, tf, config["context"]["bars"])
+else:
+    # 対象外のTFは従来通り（ただし上限500本に制限）
+    df = fetcher.get_analysis_df(symbol, tf)
+    if df is not None and len(df) > 500:
+        df = df.tail(500)
+```
 
-**実装内容:**
-- [x] Geminiプロンプトに `scenarios`（bull/bear/range）を追加
-- [x] `Dashboard.tsx` のAIタブにシナリオパネルを表示
+### 将来拡張: APIパラメータ化
+`/api/state` や `/api/analyze` に `target_pips` パラメータを追加し、
+フロントエンドからpipsターゲットを変更できるようにする。
+```
+GET /api/state?target_pips=20    # デイトレード
+GET /api/state?target_pips=10    # スキャルピング
+GET /api/state?target_pips=200   # スイングトレード
+```
 
-**対象ファイル:** `ono_estimator/core/ai_analyzer.py`, `frontend/src/components/Dashboard.tsx`
-
----
-
-### D-3. RR比フィルターの撤廃（積極モード）
-
-**概要:**
-現状 `RR 2.0以上のみ推奨` という制約があるが、積極エントリー方針に合わせて撤廃。
-RR 1.0以上なら全て表示し、ユーザーが判断する。
-
-**実装内容:**
-- [x] `engine_integration.py` のGeminiプロンプトからRR2.0フィルターを削除（RR1.0以上推奨に変更）
-- [x] RR < 1.5 の場合は「低RR注意」をwarningsに追加する方針に変更
-
-**対象ファイル:** `ono_estimator/core/engine_v2/engine_integration.py`, `ono_estimator/core/ai_analyzer.py`
-
----
-
-### D-4. MTF（マルチタイムフレーム）一致スコアの強化（既存改善）
-
-**実装内容:**
-- [x] 全時間足の方向を集計し `confluence_score` を算出
-- [x] `/api/state` に `confluence` フィールドを追加
-- [ ] 短期足（15m/30m）を含めたスコアを「スキャルピング用confluence」として別途算出
-
----
-
-### D-5. エントリーパターン自動タグ付け
-
-**概要:**
-各エントリーにパターンタグを自動付与し、後から「どのパターンが勝率高いか」を分析できるようにする。
-
-**実装内容:**
-- [ ] 以下のタグを自動検出して `trades` テーブルに保存:
-  - `#BOS_pullback` / `#CHoCH` / `#liquidity_sweep` / `#order_block` / `#fvg_fill`
-  - `#key_level_bounce` / `#trend_continuation` / `#reversal`
-  - `#scalp_15m` / `#day_1h` / `#swing_4h`
-  - `#london_open` / `#ny_open` / `#tokyo_session`
-- [ ] `Analytics.tsx` でタグ別の勝率を集計・表示
-
-**対象ファイル:** `ono_estimator/core/ai_analyzer.py`, `ono_estimator/core/database.py`, `frontend/src/components/Analytics.tsx`
+**フロントエンド側のUI案:**
+Dashboard.tsxのヘッダーにドロップダウンまたはスライダーを追加:
+```
+[スキャルピング 5-10pips] [デイトレード 15-30pips] [スイング 50-200pips] [ポジション 300-500pips]
+```
+選択するとAPIの `target_pips` が切り替わり、分析ウィンドウ・Geminiプロンプト・
+TP/SL計算がすべて自動で変わる。銘柄ごとに異なるpipsを設定することも可能にする。
 
 ---
 
-## 🔵 PHASE E — 通知・UX改善（低優先）
+## TASK 3: Geminiプロンプトの改修（最優先）
 
-### E-1. Discord通知のフォーマット強化
+**変更: `ono_estimator/core/engine_v2/master_engine.py` の `_build_gemini_prompt`**
 
-**概要:**
-Discord通知にエントリーパネルの情報を全て含める（スタイル / 必要資金 / 価格予測 / RR比）。
+現在のプロンプトは「今後の価格方向と具体的なトレード戦略」を聞いている。
+これを **「今この瞬間のエントリー判断」** に変更する。
 
-**実装内容:**
-- [x] `notifier.py` の通知フォーマットを強化（スタイル/タイミング/pips/保有時間を含む）
+### 変更前（現在）
+```
+あなたは世界トップクラスのFXアナリストです。
+以下の多層分析結果を基に、{symbol}の今後の価格方向と
+具体的なトレード戦略を日本語で提供してください。
+```
 
-**対象ファイル:** `ono_estimator/core/notifier.py`
+### 変更後
+```python
+# スタイル名はpips_configから自動取得（スキャル/デイ/スイング/ポジション）
+trade_style = get_trade_style(target_pips)
+config = get_window_config(target_pips)
+hold_minutes = config["hold_minutes"]
+window_bars = config["primary"]["bars"]
+primary_tf = config["primary"]["tf"]
+
+# スタイルに応じた指示文を自動生成
+if hold_minutes <= 30:
+    time_instruction = "秒〜分単位の超短期判断です。迷ったらWAITを出してください。"
+    trend_instruction = "日足・週足は完全に無視してください。"
+elif hold_minutes <= 240:
+    time_instruction = "数十分〜数時間の短期判断です。"
+    trend_instruction = "日足は方向の参考程度に留め、直近の値動きを優先してください。"
+elif hold_minutes <= 2880:
+    time_instruction = "数時間〜数日の中期判断です。"
+    trend_instruction = "日足のトレンドも考慮しつつ、直近の動きとのバランスで判断してください。"
+else:
+    time_instruction = "数日〜数週間の長期判断です。"
+    trend_instruction = "週足・日足のトレンドを重視し、短期ノイズに惑わされないでください。"
+
+prompt = f"""あなたは{trade_style}専門のFXアナリストです。
+
+【分析設定】
+- 銘柄: {symbol}
+- トレードスタイル: {trade_style}
+- ターゲット: {target_pips} pips
+- 分析ウィンドウ: 直近{window_bars}本（{primary_tf}足）のみ
+- 想定保有時間: {hold_minutes}分以内
+
+【重要指示】
+- {time_instruction}
+- {trend_instruction}
+- 以下のスコアはすべて「直近{window_bars}本」から計算されています
+- 方向感がない場合はWAITを出してください（無理にBUY/SELLを出さない）
+
+## 銘柄特性
+{personality}
+
+## 多層分析スコア（直近{window_bars}本ベース）
+{layers_text}
+
+## 検出シグナル
+{signals_text}
+
+## テクニカル指標（直近値）
+- 現在価格: {close}
+- RSI(14): {rsi}
+- ATR(14): {atr}
+- EMA200: {ema200}
+
+## 水平線・レジサポ情報
+- 直近レジスタンス: {nearest_resistance}
+- 直近サポート: {nearest_support}
+- レジサポ転換: {flip_detected}
+- 現在ゾーン: {current_zone}
+
+## 警告
+{warnings_text}
+
+## エンジン判定
+- 方向: {direction}
+- 確率: {probability}%
+- Entry: {entry_price}
+- TP: {take_profit} ({target_pips}pips)
+- SL: {stop_loss}
+- RR: {expected_rr}
+
+## 出力要件
+以下のJSON形式で回答:
+{{
+  "direction": "BUY|SELL|WAIT",
+  "confidence": 0-100,
+  "price_target": 数値,
+  "key_levels": {{"support": [価格], "resistance": [価格]}},
+  "narrative": "100文字以内の判断根拠",
+  "risk_factors": ["リスク要因"],
+  "entry_strategy": "エントリー戦略"
+}}"""
+```
+
+### `_build_gemini_prompt` の引数拡張
+`pips_config` から取得した設定を `_build_gemini_prompt` に渡す。
+`analyze()` メソッドに `target_pips` パラメータを追加する。
 
 ---
 
-### E-2. 「見送りログ」ダッシュボード表示
+## TASK 4: レジサポ・水平線分析の強化（新機能）
 
-**実装内容:**
-- [x] `/api/missed` エンドポイント追加
-- [x] `Dashboard.tsx` のHistoryタブに見送りログパネルを追加
+### 4-1. 新モジュール: `ono_estimator/core/engine_v2/support_resistance.py`
 
-**対象ファイル:** `api/server.py`, `frontend/src/components/Dashboard.tsx`
+**目的:** 直近データから動的にサポート・レジスタンスラインを検出し、
+現在価格との関係（近接・反発・ブレイク・レジサポ転換）を判定する。
 
----
+```python
+"""
+サポート・レジスタンス分析エンジン
+==================================
+直近N本のローソク足から水平線を検出し、以下を判定:
+  1. 水平線の位置と強度（何回タッチしたか）
+  2. 現在価格が水平線の近くにいるか
+  3. 反発 or ブレイク の判定
+  4. レジサポ転換（過去のレジスタンスが新しいサポートになった等）
+  5. レンジ判定（上下の水平線に挟まれているか）
+"""
+from dataclasses import dataclass, field
+from typing import List, Optional, Tuple
+import numpy as np
+import pandas as pd
 
-### E-3. 通知ログのダッシュボード表示（既存改善）
 
-**実装内容:**
-- [x] `/api/notifications` エンドポイントを追加
-- [ ] 通知ログに「結果」カラムを追加（後から WIN/LOSS を記入できる）
+@dataclass
+class SRLevel:
+    """1本の水平線"""
+    price: float              # 水平線の価格
+    strength: int             # 強度（タッチ回数）
+    level_type: str           # "RESISTANCE" / "SUPPORT"
+    first_touch_index: int    # 最初にタッチした足のインデックス
+    last_touch_index: int     # 最後にタッチした足のインデックス
+    is_broken: bool = False   # ブレイク済みか
+    is_flipped: bool = False  # レジサポ転換したか
 
----
 
-### E-4. エントリーチェックリスト（ワンクリック確認）
+@dataclass
+class SRResult:
+    """S/R分析結果"""
+    # 検出された水平線
+    resistances: List[SRLevel] = field(default_factory=list)
+    supports: List[SRLevel] = field(default_factory=list)
 
-**概要:**
-エントリー直前に「やるべき確認事項」をチェックリスト形式で表示し、判断ミスを防ぐ。
+    # 現在価格に最も近い水平線
+    nearest_resistance: Optional[SRLevel] = None
+    nearest_support: Optional[SRLevel] = None
 
-**実装内容:**
-- [x] `PreEntryChecklistModal` コンポーネントを追加（6項目チェックリスト）
-- [x] ロット計算パネルに「エントリーチェック」ボタンを追加
-- [x] 全チェック完了後にボタンが有効化される
+    # 判定結果
+    at_resistance: bool = False    # 現在価格がレジスタンス付近
+    at_support: bool = False       # 現在価格がサポート付近
+    bounce_detected: bool = False  # 反発を検出
+    bounce_direction: str = "NONE" # "UP"（サポート反発）/ "DOWN"（レジスタンス反発）
+    break_detected: bool = False   # ブレイクを検出
+    break_direction: str = "NONE"  # "UP"（レジスタンスブレイク）/ "DOWN"（サポートブレイク）
+    flip_detected: bool = False    # レジサポ転換を検出
+    flip_type: str = "NONE"        # "R_TO_S"（レジ→サポ）/ "S_TO_R"（サポ→レジ）
 
-**対象ファイル:** `frontend/src/components/Dashboard.tsx`
+    # レンジ判定
+    is_range: bool = False
+    range_high: float = 0.0
+    range_low: float = 0.0
+    range_width_pips: float = 0.0
 
----
+    # スコア（-50〜+50）
+    score: float = 0.0
+    signals: List[str] = field(default_factory=list)
 
-### E-5. モバイル最適化
 
-**概要:**
-スマホで見ても重要情報がすぐわかるレイアウトに最適化する。
+class SupportResistanceAnalyzer:
+    """サポート・レジスタンス分析エンジン"""
 
-**実装内容:**
-- [ ] `Dashboard.tsx` のレスポンシブデザインを改善
-  - モバイルでは「総合判断バナー」「価格予測」「ロット計算」を最上部に集約
-  - 詳細な分析情報は下にスクロール
-- [ ] スワイプで銘柄切り替えができるカルーセルUIを追加
-- [ ] 重要通知時はブラウザのプッシュ通知を送信（PWA対応）
+    def __init__(self, pip_value: float = 0.01):
+        self.pip_value = pip_value
 
-**対象ファイル:** `frontend/src/components/Dashboard.tsx`, `frontend/src/app/layout.tsx`
+    def analyze(self, df: pd.DataFrame, current_price: float = None) -> SRResult:
+        """
+        メイン分析。dfは直近ウィンドウ分（例: 5M×48本）のみ受け取る想定。
+        """
+        result = SRResult()
+        if df is None or len(df) < 10:
+            return result
 
----
+        if current_price is None:
+            current_price = float(df["close"].iloc[-1])
 
-## 📊 新規データベーステーブル一覧
+        high = df["high"].values
+        low = df["low"].values
+        close = df["close"].values
+        atr = self._calc_atr(df)
 
-```sql
--- 見送りシグナル記録
-CREATE TABLE missed_signals (
-  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-  symbol text NOT NULL,
-  direction text NOT NULL,
-  score float,
-  probability float,
-  entry_price float,
-  tp1 float, tp2 float, sl float,
-  reason_skipped text,
-  result_6h text,   -- 6時間後の正解判定
-  result_24h text,  -- 24時間後の正解判定
-  timestamp timestamptz DEFAULT now()
-);
+        # Step 1: スウィングハイ・ローから水平線候補を検出
+        levels = self._detect_levels(high, low, close, atr)
 
--- トレード記録（拡張）
-ALTER TABLE trades ADD COLUMN trade_style text;      -- scalp/day/swing
-ALTER TABLE trades ADD COLUMN entry_reason text;
-ALTER TABLE trades ADD COLUMN exit_reason text;
-ALTER TABLE trades ADD COLUMN score_at_entry float;
-ALTER TABLE trades ADD COLUMN probability_at_entry float;
-ALTER TABLE trades ADD COLUMN session text;          -- Tokyo/London/NY
-ALTER TABLE trades ADD COLUMN tags text[];           -- パターンタグ
-ALTER TABLE trades ADD COLUMN rr_actual float;       -- 実際のRR比
-ALTER TABLE trades ADD COLUMN pnl_jpy float;         -- 損益（円）
-ALTER TABLE trades ADD COLUMN noise_tolerance float; -- 許容ノイズ幅
+        # Step 2: クラスタリング（近接する水平線をまとめる）
+        clustered = self._cluster_levels(levels, atr)
 
--- メンタルチェックログ
-CREATE TABLE mental_log (
-  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-  consecutive_losses int DEFAULT 0,
-  consecutive_wins int DEFAULT 0,
-  warning_type text,
-  timestamp timestamptz DEFAULT now()
-);
+        # Step 3: 現在価格との位置関係で分類
+        for level in clustered:
+            if level.price > current_price:
+                level.level_type = "RESISTANCE"
+                result.resistances.append(level)
+            else:
+                level.level_type = "SUPPORT"
+                result.supports.append(level)
+
+        # 近い順にソート
+        result.resistances.sort(key=lambda x: x.price)
+        result.supports.sort(key=lambda x: x.price, reverse=True)
+
+        if result.resistances:
+            result.nearest_resistance = result.resistances[0]
+        if result.supports:
+            result.nearest_support = result.supports[0]
+
+        # Step 4: 近接判定
+        tolerance = atr * 0.5
+        if result.nearest_resistance and abs(current_price - result.nearest_resistance.price) < tolerance:
+            result.at_resistance = True
+        if result.nearest_support and abs(current_price - result.nearest_support.price) < tolerance:
+            result.at_support = True
+
+        # Step 5: 反発検出（直近3本のプライスアクション）
+        self._detect_bounce(df, result, atr)
+
+        # Step 6: ブレイク検出（実体ベース）
+        self._detect_break(df, result, atr)
+
+        # Step 7: レジサポ転換検出
+        self._detect_flip(df, result, high, low, close, atr)
+
+        # Step 8: レンジ判定
+        self._detect_range(result, current_price, atr)
+
+        # Step 9: スコア計算
+        self._calc_score(result)
+
+        return result
+
+    def _detect_levels(self, high, low, close, atr) -> List[SRLevel]:
+        """
+        スウィングハイ・ローを検出し、水平線候補を返す。
+        左右2本ずつ比較するシンプルな手法。
+        """
+        levels = []
+        n = len(high)
+        for i in range(2, n - 2):
+            # スウィングハイ: 前後2本より高い
+            if high[i] > high[i-1] and high[i] > high[i-2] and \
+               high[i] > high[i+1] and high[i] > high[i+2]:
+                levels.append(SRLevel(
+                    price=float(high[i]),
+                    strength=1,
+                    level_type="RESISTANCE",
+                    first_touch_index=i,
+                    last_touch_index=i,
+                ))
+            # スウィングロー: 前後2本より低い
+            if low[i] < low[i-1] and low[i] < low[i-2] and \
+               low[i] < low[i+1] and low[i] < low[i+2]:
+                levels.append(SRLevel(
+                    price=float(low[i]),
+                    strength=1,
+                    level_type="SUPPORT",
+                    first_touch_index=i,
+                    last_touch_index=i,
+                ))
+        return levels
+
+    def _cluster_levels(self, levels: List[SRLevel], atr: float) -> List[SRLevel]:
+        """
+        近接する水平線をクラスタリング（ATR×0.3以内を同一ラインとみなす）。
+        タッチ回数（strength）を合算する。
+        """
+        if not levels:
+            return []
+        threshold = atr * 0.3
+        levels.sort(key=lambda x: x.price)
+        clustered = [levels[0]]
+        for lv in levels[1:]:
+            if abs(lv.price - clustered[-1].price) < threshold:
+                # 同一クラスタ: 強度を加算、価格は平均
+                clustered[-1].strength += lv.strength
+                clustered[-1].price = (clustered[-1].price + lv.price) / 2
+                clustered[-1].last_touch_index = max(
+                    clustered[-1].last_touch_index, lv.last_touch_index
+                )
+            else:
+                clustered.append(lv)
+        return clustered
+
+    def _detect_bounce(self, df, result: SRResult, atr: float):
+        """
+        直近3〜5本でS/R付近から反発したかを検出。
+        条件: S/R付近にヒゲを出した後、逆方向に実体が伸びた。
+        """
+        if len(df) < 3:
+            return
+        last3 = df.tail(3)
+        close_vals = last3["close"].values
+        low_vals = last3["low"].values
+        high_vals = last3["high"].values
+
+        # サポート反発: 安値がサポート付近 → その後上昇
+        if result.nearest_support:
+            s = result.nearest_support.price
+            if any(abs(l - s) < atr * 0.5 for l in low_vals[:-1]):
+                if close_vals[-1] > close_vals[-2]:
+                    result.bounce_detected = True
+                    result.bounce_direction = "UP"
+                    result.signals.append(
+                        f"🟢 サポート反発検出 @ {s:.5f} → 上昇（BUY候補）"
+                    )
+
+        # レジスタンス反発: 高値がレジスタンス付近 → その後下落
+        if result.nearest_resistance:
+            r = result.nearest_resistance.price
+            if any(abs(h - r) < atr * 0.5 for h in high_vals[:-1]):
+                if close_vals[-1] < close_vals[-2]:
+                    result.bounce_detected = True
+                    result.bounce_direction = "DOWN"
+                    result.signals.append(
+                        f"🔴 レジスタンス反発検出 @ {r:.5f} → 下落（SELL候補）"
+                    )
+
+    def _detect_break(self, df, result: SRResult, atr: float):
+        """
+        実体ベースでS/Rブレイクを検出。ヒゲだけの突破は無視する。
+        """
+        if len(df) < 2:
+            return
+        last = df.iloc[-1]
+        body_high = max(float(last["open"]), float(last["close"]))
+        body_low = min(float(last["open"]), float(last["close"]))
+
+        # レジスタンスブレイク
+        if result.nearest_resistance:
+            r = result.nearest_resistance.price
+            if body_high > r:
+                result.break_detected = True
+                result.break_direction = "UP"
+                result.nearest_resistance.is_broken = True
+                result.signals.append(
+                    f"⚡ レジスタンスブレイク @ {r:.5f}（実体突破 → BUY継続候補）"
+                )
+
+        # サポートブレイク
+        if result.nearest_support:
+            s = result.nearest_support.price
+            if body_low < s:
+                result.break_detected = True
+                result.break_direction = "DOWN"
+                result.nearest_support.is_broken = True
+                result.signals.append(
+                    f"⚡ サポートブレイク @ {s:.5f}（実体突破 → SELL継続候補）"
+                )
+
+    def _detect_flip(self, df, result: SRResult, high, low, close, atr: float):
+        """
+        レジサポ転換の検出:
+        1. 過去にレジスタンスだった価格帯を下回った後、再度その価格帯まで戻って反発
+           → レジスタンスがサポートに転換（R_TO_S）
+        2. 過去にサポートだった価格帯を上回った後、再度その価格帯まで戻って反発
+           → サポートがレジスタンスに転換（S_TO_R）
+
+        実装ロジック:
+        - 全検出済みレベルの中で is_broken=True のものを対象にする
+        - 直近5本の中でそのレベル付近（ATR×0.5以内）にタッチした後、反転していれば転換
+        """
+        if len(df) < 5:
+            return
+
+        last5 = df.tail(5)
+        close_last = float(close[-1])
+        tolerance = atr * 0.5
+
+        # ブレイク済みレジスタンスがサポートに転換したか
+        for r in result.resistances:
+            if r.is_broken:
+                # ブレイク後に戻ってきてサポートとして機能
+                if any(abs(float(l) - r.price) < tolerance for l in last5["low"].values):
+                    if close_last > r.price:
+                        result.flip_detected = True
+                        result.flip_type = "R_TO_S"
+                        r.is_flipped = True
+                        result.signals.append(
+                            f"🔄 レジサポ転換（R→S）@ {r.price:.5f} — 過去のレジスタンスが新サポートに"
+                        )
+                        break
+
+        # ブレイク済みサポートがレジスタンスに転換したか
+        for s in result.supports:
+            if s.is_broken:
+                if any(abs(float(h) - s.price) < tolerance for h in last5["high"].values):
+                    if close_last < s.price:
+                        result.flip_detected = True
+                        result.flip_type = "S_TO_R"
+                        s.is_flipped = True
+                        result.signals.append(
+                            f"🔄 レジサポ転換（S→R）@ {s.price:.5f} — 過去のサポートが新レジスタンスに"
+                        )
+                        break
+
+        # 追加: ブレイクされていなくても、過去データ全体から転換を検出
+        # （ウィンドウの前半でレジスタンスだった価格が後半でサポートになっている等）
+        if not result.flip_detected:
+            n = len(close)
+            half = n // 2
+            if half >= 5:
+                first_half_highs = high[:half]
+                second_half_lows = low[half:]
+                for fh in first_half_highs:
+                    for sl_val in second_half_lows:
+                        if abs(float(fh) - float(sl_val)) < tolerance:
+                            if close_last > float(fh):
+                                result.flip_detected = True
+                                result.flip_type = "R_TO_S"
+                                result.signals.append(
+                                    f"🔄 レジサポ転換（R→S）@ {float(fh):.5f}"
+                                )
+                                break
+                    if result.flip_detected:
+                        break
+
+    def _detect_range(self, result: SRResult, current_price: float, atr: float):
+        """
+        レンジ判定: 上下のS/Rに挟まれている場合。
+        レンジ幅がATR×3未満ならレンジと判定。
+        """
+        if result.nearest_resistance and result.nearest_support:
+            r = result.nearest_resistance.price
+            s = result.nearest_support.price
+            width = r - s
+            if width > 0 and width < atr * 4:
+                result.is_range = True
+                result.range_high = r
+                result.range_low = s
+                result.range_width_pips = width / self.pip_value
+                result.signals.append(
+                    f"📦 レンジ相場 [{s:.5f}〜{r:.5f}] 幅{result.range_width_pips:.0f}pips"
+                )
+
+    def _calc_score(self, result: SRResult):
+        """S/R分析からスコアを計算"""
+        score = 0.0
+
+        # 反発シグナル
+        if result.bounce_detected:
+            if result.bounce_direction == "UP":
+                score += 20
+            elif result.bounce_direction == "DOWN":
+                score -= 20
+
+        # ブレイクシグナル
+        if result.break_detected:
+            if result.break_direction == "UP":
+                score += 15
+            elif result.break_direction == "DOWN":
+                score -= 15
+
+        # レジサポ転換（高確度シグナル）
+        if result.flip_detected:
+            if result.flip_type == "R_TO_S":
+                score += 25  # 転換後のサポート → BUY優位
+            elif result.flip_type == "S_TO_R":
+                score -= 25  # 転換後のレジスタンス → SELL優位
+
+        # レンジ中は方向感なし
+        if result.is_range and not result.break_detected:
+            score *= 0.5  # レンジ中はスコアを半減
+
+        # 水平線の強度ボーナス
+        if result.nearest_support and result.nearest_support.strength >= 3:
+            score += 5
+        if result.nearest_resistance and result.nearest_resistance.strength >= 3:
+            score -= 5
+
+        result.score = max(-50, min(50, score))
+
+    def _calc_atr(self, df: pd.DataFrame, period: int = 14) -> float:
+        """ATR計算（dfにatr列があればそれを使う）"""
+        if "atr" in df.columns and not df["atr"].isna().all():
+            return float(df["atr"].iloc[-1])
+        high = df["high"]
+        low = df["low"]
+        close = df["close"]
+        tr = pd.concat([
+            high - low,
+            (high - close.shift()).abs(),
+            (low - close.shift()).abs(),
+        ], axis=1).max(axis=1)
+        return float(tr.rolling(min(period, len(df))).mean().iloc[-1])
+```
+
+### 4-2. master_engine.py への統合
+
+**変更: `ono_estimator/core/engine_v2/master_engine.py`**
+
+1. `SupportResistanceAnalyzer` をインポートして `MasterFXEngine.__init__` に追加
+2. `analyze()` メソッド内で S/R分析を実行
+3. 結果を `MasterSignal` に追加（新フィールド）
+4. `_build_gemini_prompt` に水平線情報を含める
+
+```python
+# MasterSignal に追加するフィールド
+@dataclass
+class MasterSignal:
+    # ... 既存フィールド ...
+
+    # S/R分析（新規追加）
+    nearest_resistance: float = 0.0
+    nearest_support: float = 0.0
+    at_resistance: bool = False
+    at_support: bool = False
+    bounce_detected: bool = False
+    bounce_direction: str = "NONE"
+    break_detected: bool = False
+    break_direction: str = "NONE"
+    flip_detected: bool = False
+    flip_type: str = "NONE"
+    is_range: bool = False
+    range_high: float = 0.0
+    range_low: float = 0.0
+    sr_score: float = 0.0
+    sr_signals: List[str] = field(default_factory=list)
+```
+
+### 4-3. WEIGHTSの調整
+
+S/R分析を6番目のレイヤーとして追加するか、
+既存レイヤーの重みを調整してS/Rスコアを統合する。
+
+**推奨: 既存5レイヤーの重みを維持し、S/Rスコアをボーナスとして加算**
+
+```python
+WEIGHTS = {
+    "smc":          0.30,
+    "technical":    0.25,
+    "fundamental":  0.20,
+    "momentum":     0.15,
+    "correlation":  0.10,
+}
+
+# S/Rスコア（-50〜+50）は最終スコアにそのまま加算
+# これにより、S/R付近での判断が強化される
+final_score = weighted_score + sr_result.score * 0.3  # 30%の重みで加算
 ```
 
 ---
 
-## 🆕 新規APIエンドポイント一覧
+## TASK 5: SV検出の直近ウィンドウ化
 
-| エンドポイント | メソッド | 概要 |
-|---|---|---|
-| `/api/ranking` | GET | 8銘柄の機会スコアランキング |
-| `/api/position/check` | POST | 保有中ポジションの継続判断 |
-| `/api/analytics` | GET | 自己分析データ（勝率・期待値等） |
-| `/api/analytics/tags` | GET | パターンタグ別分析 |
-| `/api/missed` | GET | 見送りシグナルログ |
-| `/api/mental_check` | GET | コンディション状態 |
-| `/api/summary/weekly` | GET | 週次サマリー |
-| `/api/summary/monthly` | GET | 月次サマリー |
-| `/api/capital/calc` | POST | 必要資金・ロット計算 |
+**変更: `ono_estimator/filters/liquidity_sweep.py`**
 
----
+現在のSV検出もフルデータベースで行われている可能性がある。
+`detect_liquidity_sweep` に渡すDFを直近ウィンドウ（pipsターゲット連動）に制限する。
 
-## 🆕 新規フロントエンドコンポーネント一覧
+変更箇所は `api/server.py` 内の呼び出し元:
+```python
+# 変更前
+ls_result = detect_liquidity_sweep(df_full, ...)
 
-| コンポーネント | 概要 |
-|---|---|
-| `EntryPanel.tsx` | エントリー判断パネル（スタイル/資金/ロット/予測） |
-| `RankingBar.tsx` | 8銘柄優先度ランキング |
-| `PositionTracker.tsx` | 保有中ポジション管理・継続判断 |
-| `Analytics.tsx` | 自己分析ダッシュボード |
-| `MissedSignals.tsx` | 見送りログ表示 |
-| `MentalMeter.tsx` | コンディションメーター |
-| `ScenarioPanel.tsx` | エントリーシナリオA/B/C |
-| `PreEntryChecklist.tsx` | エントリー前チェックリスト |
+# 変更後
+df_sv = df_full.tail(config["primary"]["bars"])  # 直近N本のみ
+ls_result = detect_liquidity_sweep(df_sv, ...)
+```
 
 ---
 
-## 🆕 新規バックエンドモジュール一覧
+## TASK 6: 3層合意制の導入
 
-| ファイル | 概要 |
-|---|---|
-| `capital_calculator.py` | 必要資金・証拠金計算 |
-| `trade_style_detector.py` | スキャル/デイ/スイング判定 |
-| `entry_timing_detector.py` | NOW/WAIT/LIMIT判定 |
-| `opportunity_ranker.py` | 銘柄優先度ランキング |
-| `performance_analyzer.py` | 自己分析・統計計算 |
-| `mental_guard.py` | 感情バイアス・コンディション検知 |
-| `missed_signal_tracker.py` | 見送りシグナル記録・照合 |
+**変更: `api/server.py` の分析ループ**
+
+各タイムフレームの分析結果を統合する際に、3層（context / confirm / primary）の
+方向が一致するかを確認し、一致度に応じてスコアを調整する。
+
+```python
+def calc_agreement_score(context_dir, confirm_dir, primary_dir):
+    """
+    3層の方向一致度を計算。
+    全一致: スコアそのまま
+    2/3一致: スコア×0.7
+    不一致: スコア×0.3（ほぼWAITになる）
+    """
+    dirs = [context_dir, confirm_dir, primary_dir]
+    buy_count = sum(1 for d in dirs if "BUY" in d)
+    sell_count = sum(1 for d in dirs if "SELL" in d)
+
+    if buy_count >= 3 or sell_count >= 3:
+        return 1.0   # 全一致
+    elif buy_count >= 2 or sell_count >= 2:
+        return 0.7   # 2/3一致
+    else:
+        return 0.3   # バラバラ
+```
 
 ---
 
-## ✅ 実装済み（参考）
+## 実装順序（優先度順）
 
-- [x] 5レイヤーエンジン（SMC/Technical/Fundamental/Momentum/Correlation）
-- [x] Gemini AI連携（マルチキー対応）
-- [x] Supabase DB連携
-- [x] Discord通知（システム別チャンネル分離）
-- [x] デモトレーダー
-- [x] バックテスト自動化
-- [x] MTF confluence スコア
-- [x] セッションフィルター
-- [x] FRED経済指標連携
-- [x] 全銘柄スキャナー
-- [x] Liquidity Sweep検出（`liquidity_sweep.py`）
-- [x] エントリータイプ検出（`entry_type_detector.py`）
-- [x] 総合判断バナー（BUY/SELL/WAIT 大表示）
-- [x] デバウンス改善（30分窓）
-- [x] 通知閾値 OR条件化
-- [x] Correlation Guard緩和
+| 順番 | TASK | 変更規模 | 期待効果 |
+|------|------|---------|---------|
+| 🔴 1 | TASK 1 (pips_config.py) | 新規ファイル1つ | 設計の土台 |
+| 🔴 2 | TASK 1-2 (get_analysis_df_windowed) | 既存ファイル1箇所追加 | データスライスの実現 |
+| 🔴 3 | TASK 2 (server_v2分析ループ) | 既存ファイル修正 | 直近N本での分析が有効化 |
+| 🔴 4 | TASK 3 (Geminiプロンプト) | 既存ファイル修正 | AI判断の即時改善 |
+| 🟡 5 | TASK 4-1 (S/R分析モジュール) | 新規ファイル1つ | 水平線・反発・転換の検出 |
+| 🟡 6 | TASK 4-2 (master_engine統合) | 既存ファイル修正 | S/R情報の統合 |
+| 🟡 7 | TASK 5 (SV直近ウィンドウ化) | 既存ファイル1箇所修正 | SV通知復活 |
+| 🟢 8 | TASK 6 (3層合意制) | 既存ファイル追加ロジック | 誤シグナル削減 |
+
+---
+
+## 注意事項
+
+- 既存の `zone_analyzer.py` に `_check_reji_support_flip` と `_find_nearest_sr` が
+  あるが、lookback=30固定かつ簡易実装。TASK 4の新モジュールはこれを拡張・置換する。
+  既存のzone_analyzerは壊さず、新モジュールを優先的に使う形にする。
+- `reasoning_engine.py` のSTEP2で `ZoneContext` を組み立てている部分も、
+  新S/R分析結果で上書きする。
+- Layer1 SMC の `_detect_liquidity` もフルデータの `[-50:]` を見ているが、
+  ウィンドウスライス後のDFならこの問題は自動解消される。
+- テスト時はまず **USDJPY + 20pips（デイトレード）** で動作確認し、
+  その後 **10pips（スキャル）→ 50pips（ショートスイング）→ 200pips（スイング）** の
+  順でウィンドウ切替が正しく動くことを確認する。
+- **スタイルごとにコード分岐を作らないこと。** pipsターゲットの数値だけで
+  すべてが自動決定される設計を維持する。
+- WINDOW_CONFIGに存在しないpips値（例: 25pips）を指定された場合は、
+  `get_window_config` が最も近いキー（20pips）を自動選択する。
+  この動作で問題ないが、将来的にはpips値から線形補間で
+  bars数を計算する方式への移行も検討してよい。
+
+---
+
+## 確認用チェックリスト
+
+- [x] `pips_config.py` が作成され、全銘柄のpip値が定義されている
+- [x] `WINDOW_CONFIG` にスキャル(5,10)・デイ(15,20,30)・ショートスイング(50,100)・スイング(200,300)・ポジション(500)が定義されている
+- [x] 各WINDOW_CONFIGエントリに `style` フィールドが含まれている
+- [x] `get_analysis_df_windowed` が正しくインジケーター計算後にスライスしている
+- [x] server.pyの分析ループでprimaryTFの分析がウィンドウ適用されている
+- [x] Geminiプロンプトにスタイル名・ターゲットpips・分析ウィンドウ・保有時間が含まれている
+- [x] Geminiプロンプトの指示文がスタイルに応じて自動で変わる（短期→長期無視、長期→日足重視）
+- [x] S/R分析モジュールが水平線・反発・ブレイク・レジサポ転換を検出できる
+- [x] S/R結果がmaster_engineのスコアとGeminiプロンプトに反映されている
+- [x] SV検出が直近ウィンドウベースで動作している
+- [ ] target_pips=20でUSDJPYのシグナルが従来より多く発火する（Renderデプロイ後に確認）
+- [ ] target_pips=10に切り替えた時に分析ウィンドウが自動で短くなる（Renderデプロイ後に確認）
+- [ ] target_pips=200に切り替えた時にGeminiが日足トレンドも考慮した判断を返す（Renderデプロイ後に確認）
