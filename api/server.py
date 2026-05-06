@@ -1469,6 +1469,16 @@ async def ai_loop():
                     if direction_val not in ("BUY", "SELL"):
                         direction_val = mtf_dom
 
+                # 高確信度は学習用に積極エントリー
+                high_conf_entry = (
+                    confidence_level == "HIGH"
+                    and direction_val in ("BUY", "SELL")
+                    and not ai_data.get("is_range", False)
+                )
+                if high_conf_entry and not should_demo:
+                    should_demo = True
+                    ai_data["should_enter_demo"] = True
+
                 # L-2: Correlation Guard
                 notify_allowed = _corr_filter_allow(sym, score, notify_threshold)
 
@@ -1585,6 +1595,8 @@ async def ai_loop():
                         reason += " [LIGHT_SIGNAL]"
                     if force_confluence_entry:
                         reason += " [FULL_CONFLUENCE]"
+                    if high_conf_entry:
+                        reason += " [HIGH_CONF]"
                     if entry and tp and sl:
                         opened = demo_trader.open_position(
                             _short(sym), direction_val,
