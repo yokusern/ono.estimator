@@ -1455,6 +1455,20 @@ async def ai_loop():
                     should_demo = True
                     ai_data["should_enter_demo"] = True
 
+                # 全TF完全一致（最高確度）はデモで必ず拾う
+                mtf_count = int(engine_signals.get("mtf_confluence_count", 0) or 0)
+                mtf_dom = (engine_signals.get("mtf_confluence_dominant", "WAIT") or "WAIT").replace("STRONG_", "")
+                force_confluence_entry = (
+                    mtf_count >= len(TIMEFRAMES)
+                    and mtf_dom in ("BUY", "SELL")
+                    and not ai_data.get("is_range", False)
+                )
+                if force_confluence_entry:
+                    should_demo = True
+                    ai_data["should_enter_demo"] = True
+                    if direction_val not in ("BUY", "SELL"):
+                        direction_val = mtf_dom
+
                 # L-2: Correlation Guard
                 notify_allowed = _corr_filter_allow(sym, score, notify_threshold)
 
@@ -1569,6 +1583,8 @@ async def ai_loop():
                         reason += " [RELAXED_TF]"
                     elif lightweight_signal_ok:
                         reason += " [LIGHT_SIGNAL]"
+                    if force_confluence_entry:
+                        reason += " [FULL_CONFLUENCE]"
                     if entry and tp and sl:
                         opened = demo_trader.open_position(
                             _short(sym), direction_val,
