@@ -1411,6 +1411,21 @@ async def ai_loop():
                     should_notify = True
                     ai_data["should_notify"] = True
 
+                # DemoTrader の補助条件:
+                # AIの should_enter_demo が出ない場合でも、エンジン高確度時は自動エントリーを許可
+                direction_val = ai_data.get("direction", "WAIT")
+                if direction_val == "WAIT":
+                    direction_val = (ref_state.get("status", "WAIT") or "WAIT").replace("STRONG_", "")
+                engine_fallback_demo = (
+                    direction_val in ("BUY", "SELL")
+                    and not ai_data.get("is_range", False)
+                    and abs(score) >= 35
+                    and (prob >= 52 or confidence_level == "HIGH" or entry_timing.get("timing") == "NOW")
+                )
+                if engine_fallback_demo and not should_demo:
+                    should_demo = True
+                    ai_data["should_enter_demo"] = True
+
                 # L-2: Correlation Guard
                 notify_allowed = _corr_filter_allow(sym, score, notify_threshold)
 
@@ -1496,7 +1511,6 @@ async def ai_loop():
                     except Exception: pass
 
                 # H-11/A-5: DemoTrader エントリー (should_enter_demo OR entry_timing==NOW)
-                direction_val = ai_data.get("direction", "WAIT")
                 is_now_entry = (
                     entry_timing.get("timing") == "NOW"
                     and direction_val in ("BUY", "SELL", "STRONG_BUY", "STRONG_SELL")
@@ -1505,9 +1519,21 @@ async def ai_loop():
                 )
                 final_should_demo = (not is_locked) and (should_demo or is_now_entry) and demo_trader
                 if final_should_demo:
-                    entry = ai_data.get("entry_price") or ai_data.get("entry", 0)
-                    tp    = ai_data.get("tp_price")    or ai_data.get("tp1", 0)
-                    sl    = ai_data.get("sl_price")    or ai_data.get("sl", 0)
+                    entry = (
+                        ai_data.get("entry_price")
+                        or ai_data.get("entry", 0)
+                        or ref_state.get("entry", 0)
+                    )
+                    tp    = (
+                        ai_data.get("tp_price")
+                        or ai_data.get("tp1", 0)
+                        or ref_state.get("tp1", 0)
+                    )
+                    sl    = (
+                        ai_data.get("sl_price")
+                        or ai_data.get("sl", 0)
+                        or ref_state.get("sl", 0)
+                    )
                     reason_base = ai_data.get("entry_reason_short") or ai_data.get("awareness_text", "")
                     reason = reason_base + (" [AUTO⚡NOW]" if is_now_entry and not should_demo else "")
                     if entry and tp and sl:
