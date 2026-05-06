@@ -1285,11 +1285,7 @@ async def ai_loop():
             try:
                 if not _needs_ai(sym):
                     continue
-                if not _can_gemini():
-                    await asyncio.sleep(5)
-                    continue
 
-                _record_gemini()
                 last_ai_call[sym] = time.time()
                 ref_score = system_state[sym][ANALYSIS_TF].get("score", 0)
                 last_ai_score[sym] = ref_score
@@ -1297,26 +1293,59 @@ async def ai_loop():
                 feedback       = _get_feedback(sym)
                 engine_signals = system_state[sym].get("_engine_signals") or {}
                 engine_signals["current_price"] = price_cache.get(sym, 0)
+                ref_state = system_state[sym][ANALYSIS_TF]
 
-                ai_data = await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda s=sym, es=engine_signals, fb=feedback: ai_analyzer.analyze_single(
-                        s, {"current_price": price_cache.get(s, 0)},
-                        feedback=fb, engine_signals=es,
-                    )
-                )
-                if not ai_data:
-                    # 1-2: ALL KEYS EXHAUSTED → reset to force retry; show warning
-                    last_ai_call[sym] = 0
-                    async with system_state_lock:
-                        if not os.environ.get("GEMINI_API_KEY"):
-                            for tf in TIMEFRAMES:
-                                system_state[sym][tf]["ai_text"] = "APIキー未設定のためAI分析は無効です"
-                        else:
-                            for tf in TIMEFRAMES:
-                                system_state[sym][tf]["ai_text"] = "⚠️ AI分析データ更新中（Gemini一時停止中）"
-                    await asyncio.sleep(20)  # 1-4: 15→20s
-                    continue
+                # Geminiを使わず、エンジン数値のみで判断を組み立てる
+                direction_engine = (ref_state.get("status", "WAIT") or "WAIT").replace("STRONG_", "")
+                probability_engine = float(ref_state.get("probability", 0) or 0)
+                confidence_engine = ref_state.get("confidence", "LOW") or "LOW"
+                if probability_engine <= 0:
+                    probability_engine = min(90.0, max(40.0, abs(ref_score) * 0.9))
+
+                step1 = engine_signals.get("step1_trend", "")
+                step2 = engine_signals.get("step2_range", "")
+                step3 = engine_signals.get("step3_entry_type", "")
+                thinking_reason = engine_signals.get("thinking_reason", "")
+
+                ai_lines = [
+                    f"【上位足】{step1 or 'トレンド評価中'}",
+                    f"【中位足】{step2 or 'ゾーン評価中'}",
+                    f"【下位足】{step3 or 'トリガー評価中'}",
+                    f"【総合】{direction_engine} / 信頼度:{confidence_engine}",
+                ]
+                if thinking_reason:
+                    ai_lines.append(f"【理由】{thinking_reason}")
+
+                ai_data = {
+                    "direction": direction_engine if direction_engine in ("BUY", "SELL", "WAIT") else "WAIT",
+                    "probability": round(probability_engine, 1),
+                    "confidence": confidence_engine,
+                    "signal_quality": confidence_engine,
+                    "ai_text": "\n".join(ai_lines),
+                    "awareness_text": f"Engine-only mode: score={ref_score}",
+                    "basis": (thinking_reason or "エンジン判定"),
+                    "entry": ref_state.get("entry", 0),
+                    "tp1": ref_state.get("tp1", 0),
+                    "tp2": ref_state.get("tp2", 0),
+                    "sl": ref_state.get("sl", 0),
+                    "entry_price": ref_state.get("entry", 0),
+                    "tp_price": ref_state.get("tp1", 0),
+                    "sl_price": ref_state.get("sl", 0),
+                    "is_range": bool(engine_signals.get("is_range", False)),
+                    "entry_type": engine_signals.get("detected_entry_type", "NONE"),
+                    "predicted_price": ref_state.get("tp1", 0) or ref_state.get("entry", 0),
+                    "step1_trend": step1,
+                    "step2_range": step2,
+                    "step3_entry_type": step3,
+                    "should_notify": (
+                        abs(ref_score) >= 35
+                        or probability_engine >= 55
+                        or confidence_engine == "HIGH"
+                    ),
+                    "should_enter_demo": False,
+                    "entry_reason_short": thinking_reason[:120] if thinking_reason else "",
+                    "scenarios": {"bull": "", "bear": "", "range": ""},
+                }
 
                 # 後方互換正規化
                 ai_data.setdefault("entry",  ai_data.get("entry_price"))
