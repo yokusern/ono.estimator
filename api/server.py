@@ -1426,6 +1426,35 @@ async def ai_loop():
                     should_demo = True
                     ai_data["should_enter_demo"] = True
 
+                # 学習優先の緩和条件:
+                # 「全TFで最低30、うち1つ以上50以上」ならデモを許可
+                # さらに SV/TKS 単独相当の軽量条件として entry_decision が明確なら許可
+                tf_scores = []
+                for _tf in TIMEFRAMES:
+                    try:
+                        tf_scores.append(float(system_state[sym].get(_tf, {}).get("score", 0)))
+                    except Exception:
+                        tf_scores.append(0.0)
+                all_tf_over_30 = bool(tf_scores) and all(abs(s) >= 30 for s in tf_scores)
+                has_tf_over_50 = any(abs(s) >= 50 for s in tf_scores)
+                entry_decision = (engine_signals.get("entry_decision", "WAIT") or "WAIT").replace("STRONG_", "")
+                lightweight_signal_ok = (
+                    entry_decision in ("BUY", "SELL")
+                    and abs(score) >= 25
+                    and not ai_data.get("is_range", False)
+                )
+                relaxed_demo_ok = (
+                    direction_val in ("BUY", "SELL")
+                    and not ai_data.get("is_range", False)
+                    and (
+                        (all_tf_over_30 and has_tf_over_50)
+                        or lightweight_signal_ok
+                    )
+                )
+                if relaxed_demo_ok and not should_demo:
+                    should_demo = True
+                    ai_data["should_enter_demo"] = True
+
                 # L-2: Correlation Guard
                 notify_allowed = _corr_filter_allow(sym, score, notify_threshold)
 
@@ -1515,7 +1544,7 @@ async def ai_loop():
                     entry_timing.get("timing") == "NOW"
                     and direction_val in ("BUY", "SELL", "STRONG_BUY", "STRONG_SELL")
                     and not ai_data.get("is_range", False)
-                    and abs(score) >= 30
+                    and abs(score) >= 20
                 )
                 final_should_demo = (not is_locked) and (should_demo or is_now_entry) and demo_trader
                 if final_should_demo:
@@ -1536,6 +1565,10 @@ async def ai_loop():
                     )
                     reason_base = ai_data.get("entry_reason_short") or ai_data.get("awareness_text", "")
                     reason = reason_base + (" [AUTO⚡NOW]" if is_now_entry and not should_demo else "")
+                    if relaxed_demo_ok:
+                        reason += " [RELAXED_TF]"
+                    elif lightweight_signal_ok:
+                        reason += " [LIGHT_SIGNAL]"
                     if entry and tp and sl:
                         opened = demo_trader.open_position(
                             _short(sym), direction_val,
