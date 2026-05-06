@@ -119,6 +119,9 @@ RENDER_URL  = os.environ.get("RENDER_EXTERNAL_URL", "https://ono-estimator.onren
 if RENDER_URL and not RENDER_URL.startswith("http"):
     RENDER_URL = f"https://{RENDER_URL}"
 
+# B-1: 積極モード設定
+AGGRESSIVE_MODE = os.environ.get("AGGRESSIVE_MODE", "true").lower() == "true"
+
 # ─── グローバルステート ──────────────────────────────────────────
 def _default_sym_state():
     return {tf: {
@@ -129,6 +132,9 @@ def _default_sym_state():
         "signals": [], "warnings": [], "emoji": "⚪", "cached": False,
         "entry": 0, "basis": "", "session": "", "session_multiplier": 1.0,
         "time_window": {}, "hold_time_minutes": 0, "data_bars": 0,
+        # A-1/A-5/A-9: 新フィールド
+        "trade_style": {}, "entry_timing": {}, "entry_reason_short": "",
+        "scenarios": {}, "opportunity_score": 0,
     } for tf in TIMEFRAMES}
 
 system_state = {sym: _default_sym_state() for sym in SYMBOLS}
@@ -892,6 +898,22 @@ def _build_engine_signals(sym: str, tf_results: dict, df_store: dict) -> dict:
         _signals["mtf_confluence_score"] = 0
         _signals["mtf_conf_bonus"] = 0
 
+    # A-1: トレードスタイル判定
+    try:
+        from ono_estimator.core.trade_style_detector import detect_trade_style
+        _signals["trade_style"] = detect_trade_style(_signals)
+    except Exception as _ts_err:
+        _signals["trade_style"] = {}
+        print(f"[TradeStyleDetector] {sym}: {_ts_err}")
+
+    # A-5: エントリータイミング判定
+    try:
+        from ono_estimator.core.entry_timing_detector import detect_entry_timing
+        _signals["entry_timing"] = detect_entry_timing(_signals, float(price or 0))
+    except Exception as _et_err:
+        _signals["entry_timing"] = {}
+        print(f"[EntryTimingDetector] {sym}: {_et_err}")
+
     return _signals
 
 
@@ -1131,6 +1153,12 @@ async def ai_loop():
                 ai_data.setdefault("direction", "WAIT")
                 ai_data.setdefault("basis",  (ai_data.get("ai_text") or "")[:80])
 
+                # A-1/A-5: engine_signals の新フィールドを ai_data に注入
+                es_for_update = system_state[sym].get("_engine_signals") or engine_signals
+                ai_data.setdefault("trade_style",  es_for_update.get("trade_style", {}))
+                ai_data.setdefault("entry_timing", es_for_update.get("entry_timing", {}))
+                ai_data["score"] = score  # notifier に渡すため
+
                 # 3-5: system_state 更新（全TF）— ロックで排他制御
                 async with system_state_lock:
                     for tf in TIMEFRAMES:
@@ -1149,13 +1177,17 @@ async def ai_loop():
                             "rr_ratio":       ai_data.get("rr_ratio"),
                             "cached":         False,
                             "last_updated":   datetime.now().isoformat(),
-                            # スキャルピング特化フィールド（フロント表示用）
                             "is_range":       ai_data.get("is_range", False),
                             "entry_type":     ai_data.get("entry_type", "NONE"),
                             "predicted_price": ai_data.get("predicted_price", 0),
                             "step1_trend":    ai_data.get("step1_trend", ""),
                             "step2_range":    ai_data.get("step2_range", ""),
                             "step3_entry_type": ai_data.get("step3_entry_type", ""),
+                            # A-1/A-5/A-9/D-2 new fields
+                            "trade_style":    ai_data.get("trade_style", {}),
+                            "entry_timing":   ai_data.get("entry_timing", {}),
+                            "entry_reason_short": ai_data.get("entry_reason_short", ""),
+                            "scenarios":      ai_data.get("scenarios", {}),
                         })
 
                 ref_state = system_state[sym][ANALYSIS_TF]
@@ -1188,26 +1220,44 @@ async def ai_loop():
                     market_overview["global_theme"] = (ai_data.get("ai_text") or "")[:80] + "..."
                     market_overview["last_update_ts"] = int(time.time())
 
-                # L-5: SQI — 連敗5以上の場合は通知閾値を引き上げ（B-2: 70に緩和）
+                # L-5: SQI — 連敗5以上の場合は通知閾値を引き上げ
                 sqi_streak = _sqi_loss_streak.get(sym, 0)
-                notify_threshold = 70 if (_sqi_total_scored >= 100 and sqi_streak >= 5) else 40
+                # B-1: AGGRESSIVE_MODE では閾値を大幅引き下げ
+                if AGGRESSIVE_MODE:
+                    notify_threshold = 50 if (_sqi_total_scored >= 100 and sqi_streak >= 5) else 35
+                else:
+                    notify_threshold = 70 if (_sqi_total_scored >= 100 and sqi_streak >= 5) else 40
 
-                # A-2: confidence=HIGH かつ prob>=65 なら強制的に should_notify=True
                 confidence_level = ai_data.get("confidence", ai_data.get("signal_quality", "LOW"))
+
+                # A-2 / A-5: HIGH confidence または entry_timing==NOW なら強制通知
+                entry_timing = ai_data.get("entry_timing", {}) or {}
                 if confidence_level == "HIGH" and prob >= 65:
                     should_notify = True
                     ai_data["should_notify"] = True
+                if AGGRESSIVE_MODE and entry_timing.get("timing") == "NOW":
+                    should_notify = True
+                    ai_data["should_notify"] = True
 
-                # L-2: Correlation Guard（B-4: 両方スコア>=threshold なら両方通知）
+                # L-2: Correlation Guard
                 notify_allowed = _corr_filter_allow(sym, score, notify_threshold)
 
-                # B-2: OR条件に緩和（score>=40 OR prob>=65 OR confidence==HIGH OR should_notify）
-                should_send = (
-                    should_notify
-                    or score >= notify_threshold
-                    or prob >= 65
-                    or confidence_level == "HIGH"
-                )
+                # B-1: AGGRESSIVE_MODE OR条件（さらに緩和）
+                if AGGRESSIVE_MODE:
+                    should_send = (
+                        should_notify
+                        or score >= notify_threshold
+                        or prob >= 60
+                        or confidence_level == "HIGH"
+                        or (ref_state.get("aligned", 0) >= 3 and abs(score) >= 30)
+                    )
+                else:
+                    should_send = (
+                        should_notify
+                        or score >= notify_threshold
+                        or prob >= 65
+                        or confidence_level == "HIGH"
+                    )
 
                 # D-2: スキップ理由ログ
                 if not is_locked and not notify_allowed:
@@ -1242,16 +1292,36 @@ async def ai_loop():
                         except Exception: pass
 
                 # D-1/D-2: 通知ログ記録（送信/スキップ両方）
+                direction_ai = ai_data.get("direction", "WAIT")
                 _notification_log.appendleft({
                     "symbol":      _short(sym),
-                    "direction":   ai_data.get("direction", "WAIT"),
+                    "direction":   direction_ai,
                     "score":       score,
                     "probability": prob,
                     "confidence":  confidence_level,
                     "notified":    notified,
                     "skip_reason": skip_reason,
+                    "trade_style": (ai_data.get("trade_style") or {}).get("main_style", ""),
+                    "timing":      (ai_data.get("entry_timing") or {}).get("timing", ""),
                     "ts":          datetime.utcnow().isoformat(),
                 })
+
+                # B-2: 見送りシグナルをSupabaseに保存
+                if not notified and direction_ai not in ("WAIT", ""):
+                    try:
+                        db.save_missed_signal({
+                            "symbol":       _short(sym),
+                            "direction":    direction_ai,
+                            "score":        score,
+                            "probability":  prob,
+                            "entry":        ai_data.get("entry"),
+                            "tp1":          ai_data.get("tp1"),
+                            "tp2":          ai_data.get("tp2"),
+                            "sl":           ai_data.get("sl"),
+                            "skip_reason":  skip_reason,
+                            "trade_style":  (ai_data.get("trade_style") or {}).get("main_style", ""),
+                        })
+                    except Exception: pass
 
                 # H-11: DemoTrader エントリー
                 if not is_locked and should_demo and demo_trader:
@@ -2134,3 +2204,242 @@ def demo_close(symbol: str):
     except Exception: pass
     demo_trader.open_positions.pop(symbol.upper(), None)
     return {"status": "closed", "symbol": symbol, "close_price": cur, "pips": pips}
+
+
+# ─── A-6: 銘柄優先度ランキング ──────────────────────────────────
+
+@app.get("/api/ranking")
+def get_ranking():
+    """全8銘柄をopportunity_scoreで降順にランキング"""
+    try:
+        from ono_estimator.core.opportunity_ranker import rank_opportunities
+        ranked = rank_opportunities(system_state, ANALYSIS_TF)
+        return {
+            "data": ranked,
+            "ts": int(time.time()),
+            "top3": ranked[:3],
+        }
+    except Exception as e:
+        return {"data": [], "error": str(e)}
+
+
+# ─── B-2: 見送りシグナルログ ────────────────────────────────────
+
+@app.get("/api/missed")
+def get_missed(limit: int = Query(20, le=50)):
+    """直近の見送りシグナルを返す"""
+    try:
+        return {
+            "data": db.get_missed_signals(limit=limit),
+            "ts": int(time.time()),
+        }
+    except Exception as e:
+        return {"data": [], "error": str(e)}
+
+
+# ─── A-2: 必要資金計算 ────────────────────────────────────────
+
+from pydantic import BaseModel
+
+class CapitalRequest(BaseModel):
+    symbol: str
+    current_price: float
+    sl_pips: float = 5.0
+    risk_pct: float = 1.0
+    leverage: int = 25
+    capital_jpy: float = 0
+
+@app.post("/api/capital/calc")
+def capital_calc(req: CapitalRequest):
+    try:
+        from ono_estimator.core.capital_calculator import calc_capital
+        # Normalize symbol
+        mapping = {
+            "USDJPY": "USDJPY=X", "GOLD": "GC=F", "BTC": "BTC-USD",
+            "JP225": "^N225", "XAGUSD": "SI=F", "AUDJPY": "AUDJPY=X",
+            "EURUSD": "EURUSD=X", "EURJPY": "EURJPY=X",
+        }
+        ticker = mapping.get(req.symbol, req.symbol)
+        result = calc_capital(ticker, req.current_price, req.sl_pips,
+                              req.risk_pct, req.leverage, req.capital_jpy)
+        return result
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ─── C-3: コンディション・メンタルチェック ──────────────────────
+
+@app.get("/api/mental_check")
+def mental_check():
+    try:
+        from ono_estimator.core.mental_guard import check_mental_state
+        demo_pos = db.get_demo_positions(limit=30)
+        result = check_mental_state(db=db, demo_positions=demo_pos)
+        return result
+    except Exception as e:
+        return {"condition": "GOOD", "warnings": [], "error": str(e)}
+
+
+# ─── C-2: 自己分析ダッシュボード ────────────────────────────────
+
+@app.get("/api/analytics")
+def analytics():
+    """勝率・期待値・プロフィットファクター・スコア区間別分析"""
+    try:
+        perf = db.get_performance_summary()
+        by_sym = db.get_performance_by_symbol(limit=500)
+
+        # スコア区間別勝率（predictions テーブルから）
+        score_bands: dict = {"30-40": {}, "40-50": {}, "50-60": {}, "60+": {}}
+        if db.client:
+            try:
+                r = db.client.table("predictions")\
+                    .select("score,is_correct,is_scored")\
+                    .eq("is_scored", True).limit(500).execute()
+                for row in (r.data or []):
+                    s = abs(float(row.get("score", 0)))
+                    band = "60+" if s >= 60 else "50-60" if s >= 50 else "40-50" if s >= 40 else "30-40"
+                    if band not in score_bands:
+                        score_bands[band] = {}
+                    b = score_bands[band]
+                    b["total"] = b.get("total", 0) + 1
+                    if row.get("is_correct"):
+                        b["wins"] = b.get("wins", 0) + 1
+                for band, b in score_bands.items():
+                    t = b.get("total", 0)
+                    w = b.get("wins", 0)
+                    b["win_rate"] = round(w / t * 100, 1) if t > 0 else None
+            except Exception: pass
+
+        # 期待値
+        wr = perf.get("win_rate", 0) / 100
+        avg_win_pips  = perf.get("avg_win_pips", 15)
+        avg_loss_pips = perf.get("avg_loss_pips", 8)
+        expected_value = round(wr * avg_win_pips - (1 - wr) * avg_loss_pips, 2)
+
+        return {
+            "summary": perf,
+            "by_symbol": by_sym,
+            "score_bands": score_bands,
+            "expected_value": expected_value,
+            "ts": int(time.time()),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ─── A-7: 保有ポジション継続判断 ────────────────────────────────
+
+class PositionCheckRequest(BaseModel):
+    symbol: str
+    direction: str
+    entry_price: float
+    lot: float = 0.1
+    entry_time: str = ""
+
+@app.post("/api/position/check")
+def position_check(req: PositionCheckRequest):
+    """保有中ポジションの HOLD / TAKE_PROFIT / MOVE_SL / EXIT_NOW を判定"""
+    try:
+        mapping = {
+            "USDJPY": "USDJPY=X", "GOLD": "GC=F", "BTC": "BTC-USD",
+            "JP225": "^N225", "XAGUSD": "SI=F", "AUDJPY": "AUDJPY=X",
+            "EURUSD": "EURUSD=X", "EURJPY": "EURJPY=X",
+        }
+        ticker = mapping.get(req.symbol, req.symbol)
+        cur = price_cache.get(ticker, 0)
+        if not cur:
+            return {"judgment": "HOLD", "reason": "価格取得中"}
+
+        es = system_state.get(ticker, {}).get("_engine_signals") or {}
+        tf_state = system_state.get(ticker, {}).get(ANALYSIS_TF, {})
+        direction = req.direction.upper()
+        tp1 = tf_state.get("tp1", 0)
+        sl  = tf_state.get("sl", 0)
+        is_range = tf_state.get("is_range", False)
+        ai_dir   = tf_state.get("direction", "WAIT")
+        entry    = req.entry_price
+
+        # TP/SL到達チェック
+        if direction == "BUY":
+            pips_float = (cur - entry) * (100 if "JPY" in req.symbol or "GOLD" in req.symbol else 10000)
+            if tp1 and cur >= tp1:
+                return {"judgment": "TAKE_PROFIT", "reason": f"TP1到達 ({cur:.3f})", "cur_price": cur, "pips": round(pips_float, 1)}
+            if sl and cur <= sl:
+                return {"judgment": "EXIT_NOW", "reason": f"SL到達 ({cur:.3f})", "cur_price": cur, "pips": round(pips_float, 1)}
+            if ai_dir == "SELL":
+                return {"judgment": "EXIT_NOW", "reason": "逆方向シグナル発生（SELL）", "cur_price": cur, "pips": round(pips_float, 1)}
+        elif direction == "SELL":
+            pips_float = (entry - cur) * (100 if "JPY" in req.symbol or "GOLD" in req.symbol else 10000)
+            if tp1 and cur <= tp1:
+                return {"judgment": "TAKE_PROFIT", "reason": f"TP1到達 ({cur:.3f})", "cur_price": cur, "pips": round(pips_float, 1)}
+            if sl and cur >= sl:
+                return {"judgment": "EXIT_NOW", "reason": f"SL到達 ({cur:.3f})", "cur_price": cur, "pips": round(pips_float, 1)}
+            if ai_dir == "BUY":
+                return {"judgment": "EXIT_NOW", "reason": "逆方向シグナル発生（BUY）", "cur_price": cur, "pips": round(pips_float, 1)}
+
+        if is_range:
+            return {"judgment": "EXIT_NOW", "reason": "レンジ転換 — 決済推奨", "cur_price": cur}
+
+        return {"judgment": "HOLD", "reason": "トレンド継続中", "cur_price": cur}
+    except Exception as e:
+        return {"judgment": "HOLD", "reason": f"判定エラー: {e}"}
+
+
+# ─── C-5: 週次・月次サマリー ────────────────────────────────────
+
+@app.get("/api/summary/weekly")
+def weekly_summary():
+    try:
+        from datetime import timedelta
+        one_week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
+        data: dict = {}
+        if db.client:
+            r = db.client.table("performance_log")\
+                .select("outcome,pips_result,symbol,direction,rr_achieved")\
+                .gt("closed_at", one_week_ago)\
+                .neq("outcome", "PENDING").execute()
+            rows = r.data or []
+            total = len(rows)
+            wins  = sum(1 for r2 in rows if r2.get("outcome") == "WIN")
+            pips  = sum(float(r2.get("pips_result") or 0) for r2 in rows)
+            rrs   = [float(r2.get("rr_achieved") or 0) for r2 in rows if r2.get("rr_achieved")]
+            data = {
+                "period": "weekly",
+                "total": total,
+                "wins": wins,
+                "win_rate": round(wins / total * 100, 1) if total else 0,
+                "total_pips": round(pips, 1),
+                "avg_rr": round(sum(rrs)/len(rrs), 2) if rrs else 0,
+            }
+        return data
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/summary/monthly")
+def monthly_summary():
+    try:
+        from datetime import timedelta
+        one_month_ago = (datetime.utcnow() - timedelta(days=30)).isoformat()
+        data: dict = {}
+        if db.client:
+            r = db.client.table("performance_log")\
+                .select("outcome,pips_result,symbol,direction,rr_achieved")\
+                .gt("closed_at", one_month_ago)\
+                .neq("outcome", "PENDING").execute()
+            rows = r.data or []
+            total = len(rows)
+            wins  = sum(1 for r2 in rows if r2.get("outcome") == "WIN")
+            pips  = sum(float(r2.get("pips_result") or 0) for r2 in rows)
+            rrs   = [float(r2.get("rr_achieved") or 0) for r2 in rows if r2.get("rr_achieved")]
+            data = {
+                "period": "monthly",
+                "total": total,
+                "wins": wins,
+                "win_rate": round(wins / total * 100, 1) if total else 0,
+                "total_pips": round(pips, 1),
+                "avg_rr": round(sum(rrs)/len(rrs), 2) if rrs else 0,
+            }
+        return data
+    except Exception as e:
+        return {"error": str(e)}

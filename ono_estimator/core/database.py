@@ -405,6 +405,43 @@ class SupabaseClient:
             return "学習データ蓄積中..."
         return f"直近{total}件の勝率: {wr:.1f}%"
 
+    # ─── B-2: 見送りシグナル ──────────────────────────────────
+    def save_missed_signal(self, data: Dict[str, Any]) -> Optional[str]:
+        if not self.client:
+            return None
+        try:
+            row = {
+                "symbol":         str(data.get("symbol", "")),
+                "direction":      str(data.get("direction", "WAIT")),
+                "score":          _f(data.get("score")),
+                "probability":    _f(data.get("probability")),
+                "entry_price":    _f(data.get("entry") or data.get("entry_price")),
+                "tp1":            _f(data.get("tp1") or data.get("tp_price")),
+                "tp2":            _f(data.get("tp2")),
+                "sl":             _f(data.get("sl") or data.get("sl_price")),
+                "reason_skipped": str(data.get("skip_reason", ""))[:200],
+                "trade_style":    str(data.get("trade_style", "")),
+            }
+            res = self.client.table("missed_signals").insert(row).execute()
+            if res.data:
+                return res.data[0].get("id")
+        except Exception as e:
+            logger.warning(f"[Supabase] save_missed_signal error: {e}")
+        return None
+
+    def get_missed_signals(self, limit: int = 20) -> List[Dict]:
+        if not self.client:
+            return []
+        try:
+            res = self.client.table("missed_signals")\
+                .select("*")\
+                .order("timestamp", desc=True)\
+                .limit(limit).execute()
+            return res.data or []
+        except Exception as e:
+            logger.warning(f"[Supabase] get_missed_signals error: {e}")
+            return []
+
 
 def _f(v) -> Optional[float]:
     try:

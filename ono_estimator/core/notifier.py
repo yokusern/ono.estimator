@@ -203,10 +203,11 @@ class Notifier:
             return
         self._last_signal_key[symbol] = (sig_key, _time.time())
 
-        dir_icon   = "🟢🟢" if direction == "BUY" else "🔴🔴" if direction == "SELL" else "⚪"
+        dir_icon   = "🟢" if direction == "BUY" else "🔴" if direction == "SELL" else "⚪"
         conf       = ai_data.get("confidence", ai_data.get("signal_quality", "LOW"))
         entry      = ai_data.get("entry_price") or ai_data.get("entry", 0)
         tp         = ai_data.get("tp_price")    or ai_data.get("tp1", 0)
+        tp2        = ai_data.get("tp2", 0)
         sl         = ai_data.get("sl_price")    or ai_data.get("sl", 0)
         rr         = ai_data.get("rr_ratio", 0)
         prob       = ai_data.get("probability", 0)
@@ -215,14 +216,38 @@ class Notifier:
         is_range   = ai_data.get("is_range", False)
         entry_type = ai_data.get("entry_type", "NONE")
         enter_demo = ai_data.get("should_enter_demo", False)
+        entry_reason_short = ai_data.get("entry_reason_short", "")
+        trade_style_data   = ai_data.get("trade_style", {}) or {}
+        trade_style        = trade_style_data.get("main_style", "")
+        hold_time          = trade_style_data.get("hold_time", "")
+        style_emoji        = trade_style_data.get("emoji", "")
+        entry_timing       = ai_data.get("entry_timing", {}) or {}
+        timing             = entry_timing.get("timing", "")
+        timing_reason      = entry_timing.get("reason", "")
+        score              = ai_data.get("score", 0)
 
         def fmt(v, digits=3):
-            return f"{v:.{digits}f}" if isinstance(v, (int, float)) and v else str(v) if v else "---"
+            if isinstance(v, (int, float)) and v:
+                big = abs(v) > 100
+                return f"{v:.{1 if big else digits}f}"
+            return str(v) if v else "---"
+
+        def pips(entry_v, target_v, sym):
+            if not (entry_v and target_v): return "---"
+            mult = 100 if "JPY" in sym or "GOLD" in sym or "JP225" in sym else 10000
+            return f"{abs(target_v - entry_v) * mult:.1f}pips"
 
         rr_str = f"{rr:.2f}" if isinstance(rr, (int, float)) and rr else "---"
-        sep = "━" * 17
+        sep = "━" * 20
 
-        # エントリー根拠バッジ
+        # E-1: スタイルラベル
+        style_labels = {"scalping": "スキャルピング", "daytrading": "デイトレード", "swing": "スイング"}
+        style_label  = style_labels.get(trade_style, trade_style) if trade_style else ""
+
+        # タイミング表示
+        timing_icons = {"NOW": "🟢 今すぐ", "WAIT": "🟡 待機", "LIMIT": "🔵 指値推奨"}
+        timing_str   = timing_icons.get(timing, "") if timing else ""
+
         entry_badge = {
             "LIQUIDITY_SWEEP": "💦 Liquidity Sweep（最重要）",
             "BODY_BREAK":      "🔷 実体ブレイク",
@@ -230,35 +255,43 @@ class Notifier:
             "HAS_SHOULDER":    "📐 三尊/逆三尊の右肩崩れ",
         }.get(entry_type, "")
 
-        # ai_textからセクション抽出（なければ全文）
-        if ai_text:
-            msg_body = ai_text
-        else:
-            msg_body = f"分析データ処理中... 方向={direction} 確信度={conf}"
+        basis = entry_reason_short or (ai_text[:80] if ai_text else awareness[:80])
 
         msg_lines = [
-            f"🤖 **ONO Estimator AI判断**",
-            f"",
-            f"📊 **{symbol} — {direction}** {dir_icon}",
+            f"🎯 **【{symbol} {direction}】{style_emoji}{style_label}**",
             sep,
         ]
 
         if is_range:
-            msg_lines.append("⏸ **レンジ状態 — ブレイクアウト待機中**")
+            msg_lines.append("⏸ **レンジ中 — ブレイクアウト待機中**")
         else:
+            if basis:
+                msg_lines.append(f"📍 **根拠:** {basis}")
             if entry_badge:
-                msg_lines.append(f"**エントリー根拠:** {entry_badge}")
-            msg_lines.append(msg_body)
+                msg_lines.append(f"🔑 **パターン:** {entry_badge}")
+            if timing_str:
+                msg_lines.append(f"⏰ **タイミング:** {timing_str}{'  ' + timing_reason[:40] if timing_reason else ''}")
             msg_lines += [
                 "",
-                f"**【計画】**",
-                f"Entry: {fmt(entry)} | TP: {fmt(tp)} | SL: {fmt(sl)} | RR: {rr_str}",
-                f"確信度: {conf} | 勝率予測: {prob}%",
+                f"💰 **Entry:** {fmt(entry)}",
+                f"🎯 **TP1:** {fmt(tp)} (+{pips(entry, tp, symbol)}){'  |  TP2: ' + fmt(tp2) + ' (+' + pips(entry, tp2, symbol) + ')' if tp2 else ''}",
+                f"🛑 **SL:** {fmt(sl)} (-{pips(entry, sl, symbol)})",
+                f"📊 **RR:** {rr_str} | Score: {score} | 確率: {prob}%",
+                f"⏱ **想定保有:** {hold_time}" if hold_time else "",
             ]
 
+        msg_lines = [l for l in msg_lines if l]  # remove empty
         msg_lines.append(sep)
-        if awareness:
-            msg_lines += [f"📚 **今回意識した手法:**", awareness[:300]]
+
+        # AI text summary (key part only)
+        if ai_text and not is_range:
+            for section in ["【判断】", "【計画】"]:
+                idx = ai_text.find(section)
+                if idx >= 0:
+                    excerpt = ai_text[idx:idx+150].replace("\n", " ")
+                    msg_lines.append(f"🧠 {excerpt}")
+                    break
+
         if enter_demo:
             msg_lines.append(f"🎮 **DemoTrader: {direction} エントリー実行**")
         msg_lines.append(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M JST')}")

@@ -570,6 +570,168 @@ function NotificationPreview({ symbol, d }: { symbol: string; d: any }) {
   );
 }
 
+// ─── A-6: ランキングバー ──────────────────────────────────────
+function RankingBar({ raw, onSelect }: { raw: any; onSelect: (sym: string) => void }) {
+  const items: any[] = raw?.data?.slice(0, 3) || [];
+  if (items.length === 0) return null;
+  const medals = ["🥇", "🥈", "🥉"];
+  return (
+    <div style={{
+      background: "rgba(255,255,255,0.02)", border: "1px solid rgba(34,211,238,0.15)",
+      borderRadius: 14, padding: "12px 16px", marginBottom: 16,
+    }}>
+      <div style={{ fontSize: 11, color: "#64748b", letterSpacing: 1, marginBottom: 10 }}>
+        🏆 チャンスランキング TOP3
+      </div>
+      <div style={{ display: "flex", gap: 10 }}>
+        {items.map((item: any, i: number) => {
+          const col = dirColor(item.direction || "WAIT");
+          const styleEmoji = item.trade_style?.emoji || "📊";
+          const holdTime = item.trade_style?.hold_time || "";
+          return (
+            <button key={item.symbol} onClick={() => onSelect(item.symbol)} style={{
+              flex: 1, background: dirBg(item.direction || "WAIT"),
+              border: `1px solid ${dirBorder(item.direction || "WAIT")}`,
+              borderRadius: 10, padding: "10px 12px", cursor: "pointer", textAlign: "left",
+              transition: "all 0.2s",
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 5 }}>
+                <span style={{ fontSize: 14 }}>{medals[i]}</span>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#e2e8f0" }}>
+                  {SYMBOL_DISPLAY[item.symbol] || item.symbol}
+                </span>
+                <span style={{ fontSize: 11 }}>{styleEmoji}</span>
+              </div>
+              <div style={{ fontSize: 12, color: col, fontWeight: 700 }}>
+                {(item.direction || "WAIT").replace("STRONG_", "")}
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                <span style={{ fontSize: 10, color: "#64748b" }}>
+                  {item.opportunity_score != null ? `Rank: ${item.opportunity_score.toFixed(0)}` : ""}
+                </span>
+                <span style={{ fontSize: 10, color: col }}>
+                  {item.probability != null ? `${item.probability}%` : ""}
+                </span>
+              </div>
+              {holdTime && <div style={{ fontSize: 9, color: "#475569", marginTop: 2 }}>{holdTime}</div>}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── A-5: エントリータイミングバナー ────────────────────────────
+function EntryTimingBanner({ timing }: { timing: any }) {
+  if (!timing?.timing) return null;
+  const t = timing.timing as string;
+  const cfgMap: Record<string, { emoji: string; label: string; color: string; bg: string; border: string }> = {
+    NOW:   { emoji: "🟢", label: "今すぐエントリー",  color: "#22c55e", bg: "rgba(34,197,94,0.12)",  border: "rgba(34,197,94,0.45)" },
+    WAIT:  { emoji: "🟡", label: "エントリー待機中",  color: "#f59e0b", bg: "rgba(245,158,11,0.10)", border: "rgba(245,158,11,0.40)" },
+    LIMIT: { emoji: "🔵", label: "指値注文推奨",      color: "#60a5fa", bg: "rgba(96,165,250,0.10)", border: "rgba(96,165,250,0.40)" },
+  };
+  const cfg = cfgMap[t] || { emoji: "⏸", label: "判定中", color: "#64748b", bg: "rgba(107,114,128,0.08)", border: "rgba(107,114,128,0.2)" };
+  const confCol = timing.confidence === "HIGH" ? "#22d3ee" : timing.confidence === "MEDIUM" ? "#f59e0b" : "#64748b";
+  return (
+    <div style={{
+      background: cfg.bg, border: `1px solid ${cfg.border}`,
+      borderRadius: 12, padding: "10px 16px",
+      display: "flex", alignItems: "center", gap: 12,
+    }}>
+      <span style={{ fontSize: 22, flexShrink: 0 }}>{cfg.emoji}</span>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: cfg.color }}>{cfg.label}</div>
+        {timing.reason && (
+          <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>{timing.reason}</div>
+        )}
+        {t === "LIMIT" && timing.limit_price && (
+          <div style={{ fontSize: 11, color: "#60a5fa", marginTop: 2 }}>
+            指値価格: {Number(timing.limit_price).toFixed(4)}
+          </div>
+        )}
+      </div>
+      <div style={{ textAlign: "right", flexShrink: 0 }}>
+        <div style={{ fontSize: 10, color: "#475569" }}>タイミング</div>
+        <div style={{ fontSize: 12, fontWeight: 700, color: confCol }}>{timing.confidence || "---"}</div>
+      </div>
+    </div>
+  );
+}
+
+// ─── D-2: シナリオパネル ──────────────────────────────────────
+function ScenarioPanel({ scenarios }: { scenarios: any }) {
+  if (!scenarios || (!scenarios.bull && !scenarios.bear && !scenarios.range)) return null;
+  const items = [
+    { key: "bull",  label: "シナリオA: 上昇", emoji: "📈", color: "#22c55e" },
+    { key: "bear",  label: "シナリオB: 下落", emoji: "📉", color: "#ef4444" },
+    { key: "range", label: "シナリオC: もみ合い", emoji: "⏸",  color: "#9ca3af" },
+  ];
+  return (
+    <div style={{
+      background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
+      borderRadius: 14, padding: 16,
+    }}>
+      <div style={{ fontSize: 11, color: "#64748b", letterSpacing: 1, marginBottom: 12 }}>📋 シナリオ分析 A/B/C</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {items.map(({ key, label, emoji, color }) =>
+          (scenarios as any)[key] ? (
+            <div key={key} style={{
+              padding: "10px 12px", background: "rgba(255,255,255,0.03)",
+              borderRadius: 8, borderLeft: `3px solid ${color}60`,
+            }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color, marginBottom: 4 }}>{emoji} {label}</div>
+              <div style={{ fontSize: 12, color: "#94a3b8", lineHeight: 1.65 }}>{(scenarios as any)[key]}</div>
+            </div>
+          ) : null
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── B-2: 見逃しシグナルパネル ────────────────────────────────
+function MissedSignalsPanel({ raw }: { raw: any }) {
+  const rows: any[] = raw?.data || [];
+  if (rows.length === 0) return (
+    <div style={{ color: "#4b5563", fontSize: 13, textAlign: "center", padding: "20px 0" }}>
+      見逃しシグナルなし
+    </div>
+  );
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+        <thead>
+          <tr>
+            {["銘柄", "方向", "Score", "確率", "スキップ理由", "スタイル", "時刻"].map(h => (
+              <th key={h} style={{ textAlign: "left", padding: "4px 8px", color: "#475569", fontWeight: 600, paddingBottom: 8 }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r: any, i: number) => {
+            const col = (r.direction || "").includes("BUY") ? "#22c55e"
+              : (r.direction || "").includes("SELL") ? "#ef4444" : "#64748b";
+            return (
+              <tr key={i} style={{ borderTop: "1px solid rgba(255,255,255,0.04)" }}>
+                <td style={{ padding: "6px 8px", color: "#94a3b8" }}>{r.symbol}</td>
+                <td style={{ padding: "6px 8px", color: col, fontWeight: 700 }}>{r.direction || "---"}</td>
+                <td style={{ padding: "6px 8px", color: "#64748b" }}>{r.score ?? "---"}</td>
+                <td style={{ padding: "6px 8px", color: "#64748b" }}>{r.probability != null ? `${r.probability}%` : "---"}</td>
+                <td style={{ padding: "6px 8px", color: "#94a3b8", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {r.skip_reason || "---"}
+                </td>
+                <td style={{ padding: "6px 8px", color: "#64748b" }}>{r.trade_style || "---"}</td>
+                <td style={{ padding: "6px 8px", color: "#475569" }}>{r.created_at?.slice(11, 16) || ""}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // ─── Main ──────────────────────────────────────────────────────
 export default function Dashboard() {
   const [activeSymbol, setActiveSymbol] = useState("USDJPY");
@@ -656,6 +818,26 @@ export default function Dashboard() {
     `${API_URL}/api/notifications`, fetcher,
     { ...swrOpts, refreshInterval: 30000 }
   );
+  // A-6: opportunity ranking
+  const { data: rankingRaw } = useSWR(
+    `${API_URL}/api/ranking?tf=${activeTF}`, fetcher,
+    { ...swrOpts, refreshInterval: 30000 }
+  );
+  // C-3: mental check
+  const { data: mentalRaw } = useSWR(
+    `${API_URL}/api/mental_check`, fetcher,
+    { ...swrOpts, refreshInterval: 120000 }
+  );
+  // B-2: missed signals (history tab only)
+  const { data: missedRaw } = useSWR(
+    activeTab === "history" ? `${API_URL}/api/missed` : null, fetcher,
+    { ...swrOpts, refreshInterval: 60000 }
+  );
+  // C-2: analytics (history tab only)
+  const { data: analyticsRaw } = useSWR(
+    activeTab === "history" ? `${API_URL}/api/analytics` : null, fetcher,
+    { ...swrOpts, refreshInterval: 300000 }
+  );
 
   const isConnected = !error && !isLoading;
   // Render が停止している場合は Supabase キャッシュを使用
@@ -684,6 +866,10 @@ export default function Dashboard() {
   const entryType = current?.entry_type || "NONE";
   const aligned = current?.aligned ?? 0;
   const confidence = current?.confidence || "LOW";
+  const tradeStyle = current?.trade_style || {};
+  const entryTiming = current?.entry_timing || {};
+  const entryReasonShort = current?.entry_reason_short || "";
+  const scenarios = current?.scenarios || {};
 
   // Confluence
   const symKey = activeSymbol;
@@ -700,6 +886,14 @@ export default function Dashboard() {
   const riskPct = score >= 80 ? 2 : score >= 60 ? 1 : 0.5;
   const riskAmt = Math.floor(m * riskPct / 100);
   const recLot = (riskAmt / 5000).toFixed(2);
+
+  // A-2: 詳細資金計算 (SLピップス推定)
+  const slPips = useMemo(() => {
+    if (!current?.sl || !current?.entry) return 20;
+    const diff = Math.abs((current.entry || 0) - (current.sl || 0));
+    const isJpy = activeSymbol.includes("JPY") || activeSymbol.includes("GOLD") || activeSymbol === "JP225";
+    return Math.round(diff * (isJpy ? 100 : 10000)) || 20;
+  }, [current?.sl, current?.entry, activeSymbol]);
 
   // Win rate
   const wr = historyRaw?.win_rate ?? null;
@@ -766,6 +960,21 @@ export default function Dashboard() {
             <div style={{ fontSize: 12, color: "#94a3b8" }}>
               勝率 <span style={{ color: wr >= 60 ? "#22d3ee" : wr >= 50 ? "#f59e0b" : "#fb7185", fontWeight: 700, fontSize: 14 }}>{typeof wr === 'number' ? wr.toFixed(1) : wr}%</span>
               {totalTrades && <span style={{ color: "#4b5563" }}> ({totalTrades}件)</span>}
+            </div>
+          )}
+          {mentalRaw?.status && (
+            <div style={{
+              display: "flex", alignItems: "center", gap: 5,
+              background: mentalRaw.status === "DANGER" ? "rgba(239,68,68,0.12)" : mentalRaw.status === "CAUTION" ? "rgba(245,158,11,0.12)" : "rgba(34,197,94,0.08)",
+              border: `1px solid ${mentalRaw.status === "DANGER" ? "rgba(239,68,68,0.4)" : mentalRaw.status === "CAUTION" ? "rgba(245,158,11,0.35)" : "rgba(34,197,94,0.3)"}`,
+              borderRadius: 12, padding: "3px 10px",
+            }}>
+              <span style={{ fontSize: 12 }}>
+                {mentalRaw.status === "DANGER" ? "😰" : mentalRaw.status === "CAUTION" ? "😐" : "😊"}
+              </span>
+              <span style={{ fontSize: 11, fontWeight: 700, color: mentalRaw.status === "DANGER" ? "#ef4444" : mentalRaw.status === "CAUTION" ? "#f59e0b" : "#22c55e" }}>
+                {mentalRaw.status === "DANGER" ? "危険" : mentalRaw.status === "CAUTION" ? "注意" : "良好"}
+              </span>
             </div>
           )}
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -928,6 +1137,8 @@ export default function Dashboard() {
 
             {/* CENTER */}
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              {/* A-6: ランキングバー */}
+              <RankingBar raw={rankingRaw} onSelect={(sym) => { setActiveSymbol(sym); }} />
               {/* TF selector */}
               <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                 <span style={{ fontSize: 12, color: "#64748b" }}>時間足:</span>
@@ -962,6 +1173,38 @@ export default function Dashboard() {
                 confidence={confidence} isLoading={isLoading}
               />
 
+              {/* A-5: エントリータイミング */}
+              <EntryTimingBanner timing={entryTiming} />
+              {/* A-9: 一言根拠 */}
+              {entryReasonShort && (
+                <div style={{
+                  background: "rgba(167,139,250,0.08)", border: "1px solid rgba(167,139,250,0.2)",
+                  borderRadius: 10, padding: "8px 14px",
+                  fontSize: 12, color: "#c4b5fd", fontStyle: "italic",
+                }}>
+                  💡 {entryReasonShort}
+                </div>
+              )}
+              {/* A-1: トレードスタイルバッジ */}
+              {tradeStyle?.main_style && (
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{
+                    fontSize: 11, fontWeight: 700, color: "#94a3b8",
+                    background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)",
+                    borderRadius: 8, padding: "3px 10px",
+                  }}>
+                    {tradeStyle.emoji || "📊"} {tradeStyle.main_style}
+                  </span>
+                  {tradeStyle.hold_time && (
+                    <span style={{ fontSize: 11, color: "#64748b" }}>保有: {tradeStyle.hold_time}</span>
+                  )}
+                  {tradeStyle.reason && (
+                    <span style={{ fontSize: 10, color: "#475569", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {tradeStyle.reason}
+                    </span>
+                  )}
+                </div>
+              )}
               {/* 6-3: Chart — height responsive */}
               <div style={{
                 background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
@@ -1123,6 +1366,16 @@ export default function Dashboard() {
                     <div style={{ fontSize: 18, fontWeight: 800, color: "#f59e0b" }}>¥{riskAmt.toLocaleString()}</div>
                   </div>
                 </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8 }}>
+                  <div style={{ background: "rgba(255,255,255,0.04)", borderRadius: 10, padding: "8px 10px" }}>
+                    <div style={{ fontSize: 10, color: "#64748b", marginBottom: 2 }}>SL (推定)</div>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: "#fb7185" }}>{slPips} pips</div>
+                  </div>
+                  <div style={{ background: "rgba(255,255,255,0.04)", borderRadius: 10, padding: "8px 10px" }}>
+                    <div style={{ fontSize: 10, color: "#64748b", marginBottom: 2 }}>リスク/Lot</div>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: "#f59e0b" }}>¥{(slPips * 100).toLocaleString()}</div>
+                  </div>
+                </div>
                 <div style={{
                   marginTop: 10, background: "rgba(34,211,238,0.1)",
                   border: "1px solid rgba(34,211,238,0.2)",
@@ -1258,6 +1511,53 @@ export default function Dashboard() {
               </div>
             )}
 
+            {/* C-2: Analytics */}
+            {analyticsRaw && (
+              <div style={{
+                background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
+                borderRadius: 16, padding: 20,
+              }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "#94a3b8", marginBottom: 16 }}>📊 スコア帯別分析</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 10, marginBottom: 16 }}>
+                  {(analyticsRaw.score_bands || []).map((band: any) => {
+                    const wr2 = band.win_rate ?? 0;
+                    const col = wr2 >= 60 ? "#22d3ee" : wr2 >= 50 ? "#f59e0b" : "#fb7185";
+                    return (
+                      <div key={band.band} style={{
+                        background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)",
+                        borderRadius: 10, padding: "12px 14px",
+                      }}>
+                        <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>Score {band.band}</div>
+                        <div style={{ fontSize: 20, fontWeight: 800, color: col }}>{wr2}%</div>
+                        <div style={{ fontSize: 10, color: "#475569" }}>{band.total ?? 0}件</div>
+                      </div>
+                    );
+                  })}
+                </div>
+                {analyticsRaw.by_session && (
+                  <div>
+                    <div style={{ fontSize: 12, color: "#64748b", marginBottom: 10 }}>セッション別勝率</div>
+                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                      {Object.entries(analyticsRaw.by_session).map(([sess, data]: [string, any]) => {
+                        const sWr = data?.win_rate ?? 0;
+                        const sCol = sWr >= 60 ? "#22d3ee" : sWr >= 50 ? "#f59e0b" : "#fb7185";
+                        const sessLabel: Record<string,string> = { tokyo: "東京", london: "ロンドン", ny: "NY", off: "閑散" };
+                        return (
+                          <div key={sess} style={{
+                            background: "rgba(255,255,255,0.03)", borderRadius: 8, padding: "8px 14px", textAlign: "center",
+                          }}>
+                            <div style={{ fontSize: 11, color: "#64748b" }}>{sessLabel[sess] || sess}</div>
+                            <div style={{ fontSize: 18, fontWeight: 700, color: sCol }}>{sWr}%</div>
+                            <div style={{ fontSize: 10, color: "#475569" }}>{data?.total ?? 0}件</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Log table */}
             {historyRaw?.logs && historyRaw.logs.length > 0 && (
               <div style={{
@@ -1306,6 +1606,16 @@ export default function Dashboard() {
                 </div>
               </div>
             )}
+          {/* B-2: 見逃しシグナル */}
+          <div style={{
+            marginTop: 20, background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
+            borderRadius: 16, padding: 20,
+          }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#94a3b8", marginBottom: 14 }}>
+              ⏭ 見逃しシグナル（スキップ履歴）
+            </div>
+            <MissedSignalsPanel raw={missedRaw} />
+          </div>
           </div>
         )}
 
@@ -1344,6 +1654,40 @@ export default function Dashboard() {
               <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
                 {/* A-1: 総合エントリー判断バナー */}
                 <EntryJudgmentBanner direction={dir} confidence={confidence} probability={prob} />
+
+                {/* A-9: 一言根拠 */}
+                {entryReasonShort && (
+                  <div style={{
+                    background: "rgba(167,139,250,0.08)", border: "1px solid rgba(167,139,250,0.25)",
+                    borderRadius: 10, padding: "10px 16px",
+                    display: "flex", alignItems: "center", gap: 10,
+                  }}>
+                    <span style={{ fontSize: 16 }}>💡</span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 10, color: "#7c3aed", fontWeight: 700, marginBottom: 3 }}>エントリー根拠（一言）</div>
+                      <div style={{ fontSize: 13, color: "#c4b5fd" }}>{entryReasonShort}</div>
+                    </div>
+                  </div>
+                )}
+
+                {/* A-1: トレードスタイルバッジ */}
+                {tradeStyle?.main_style && (
+                  <div style={{
+                    display: "flex", alignItems: "center", gap: 10,
+                    background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)",
+                    borderRadius: 10, padding: "8px 14px",
+                  }}>
+                    <span style={{ fontSize: 18 }}>{tradeStyle.emoji || "📊"}</span>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#e2e8f0" }}>{tradeStyle.main_style}</div>
+                      {tradeStyle.hold_time && <div style={{ fontSize: 11, color: "#64748b" }}>推奨保有時間: {tradeStyle.hold_time}</div>}
+                      {tradeStyle.reason && <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>{tradeStyle.reason}</div>}
+                    </div>
+                  </div>
+                )}
+
+                {/* A-5: エントリータイミング */}
+                <EntryTimingBanner timing={entryTiming} />
 
                 {/* Signal summary at top */}
                 <SignalHero
@@ -1497,6 +1841,9 @@ export default function Dashboard() {
                 </div>
 
                 <NotificationPreview symbol={activeSymbol} d={current} />
+
+                {/* D-2: シナリオ分析 */}
+                <ScenarioPanel scenarios={scenarios} />
 
                 {/* M-6: RSI on BB ミニゲージ */}
                 {(() => {

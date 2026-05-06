@@ -495,6 +495,12 @@ class GeminiAnalyzer:
                 '  "step5_plan": "Entry:X / TP:X / SL:X / RR:X",',
                 '  "awareness_text": "今回意識した理論・手法と判断根拠（200字）",',
                 '  "ai_text": "【トレンド】...\\n【レンジ判定】...\\n【エントリー根拠】...\\n【反発確認】...\\n【判断】...\\n【計画】Entry:X/TP:X/SL:X/RR:X",',
+                '  "entry_reason_short": "50文字以内の一言根拠（例: 4H BOS確認 + RSI反転 + キーレベル到達）",',
+                '  "scenarios": {',
+                '    "bull": "想定通りに動いた場合（どこで利確するか・何pips）",',
+                '    "bear": "逆行した場合（SL価格・何pips損切り）",',
+                '    "range": "もみ合い継続の場合（何分待って諦めるか）"',
+                '  },',
                 '  "should_notify": false,',
                 '  "should_enter_demo": false,',
                 '  "direction": "BUY or SELL or NONE",',
@@ -548,6 +554,8 @@ class GeminiAnalyzer:
             result.setdefault("is_range",    False)
             result.setdefault("entry_type",  "NONE")
             result.setdefault("predicted_price", result.get("tp_price", 0))
+            result.setdefault("entry_reason_short", "")
+            result.setdefault("scenarios", {"bull": "", "bear": "", "range": ""})
 
             # is_rangeがtrueならデモエントリーを強制抑止
             if result.get("is_range"):
