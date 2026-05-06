@@ -24,8 +24,12 @@ class Notifier:
             os.environ.get("DISCORD_WEBHOOK_AI") or
             os.environ.get("DISCORD_WEBHOOK_URL")
         )
-        self.line_token = os.environ.get("LINE_NOTIFY_TOKEN")
+        # Phase 1-1: LINE Messaging API (LINE Notify は2025年3月末廃止済み)
+        self.line_channel_token = os.environ.get("LINE_CHANNEL_TOKEN")
+        self.line_user_id       = os.environ.get("LINE_USER_ID")
         self.session = requests.Session()
+        # Phase 4-4: Supabase ログ連続失敗カウンター
+        self._notif_log_fail_count = 0
         # B-1: シグナルキー + タイムスタンプ管理（30分窓デバウンス）
         self._last_signal_key: dict = {}   # {sym: (key, timestamp)}
 
@@ -91,7 +95,7 @@ class Notifier:
 
         ai_data_aug = {**ai_data, "_badge": badge}
 
-        if self.line_token:
+        if self.line_channel_token and self.line_user_id:
             self._send_line(symbol, score, ai_data_aug, current_price, session)
 
         systems = result.base_system.split(",") if hasattr(result, "base_system") else ["AI"]
@@ -111,8 +115,20 @@ class Notifier:
                     "score": score,
                     "notified_at": datetime.now().isoformat(),
                 }).execute()
-            except Exception:
-                pass
+                self._notif_log_fail_count = 0
+            except Exception as e:
+                self._notif_log_fail_count += 1
+                logger.warning(f"[DB] notification log failed ({self._notif_log_fail_count}回): {e}")
+                if self._notif_log_fail_count >= 3:
+                    webhook = self.default_webhook
+                    if webhook:
+                        try:
+                            self.session.post(webhook, json={
+                                "content": f"⚠️ Supabase 通知ログ書き込み失敗 {self._notif_log_fail_count}回連続 — DB接続を確認してください"
+                            }, timeout=5)
+                        except Exception:
+                            pass
+                    self._notif_log_fail_count = 0
 
     # ─── Discord 送信 ─────────────────────────────────────────
     def _send_discord(
@@ -396,7 +412,8 @@ class Notifier:
         except Exception as e:
             logger.error(f"[Notifier] send_now_auto_entry error: {e}")
 
-    # ─── LINE 送信 ────────────────────────────────────────────
+    # ─── LINE 送信 (Phase 1-1: LINE Messaging API Push Message) ──
+    # 通知送信ロジックは AI を呼ばない設計 — Gemini呼び出しはai_loopのみで行う
     def _send_line(self, symbol: str, score: float, ai_data: dict, price: float, session: str):
         prob   = ai_data.get("probability", "---")
         entry  = ai_data.get("entry") or ai_data.get("entry_price", "---")
@@ -404,8 +421,8 @@ class Notifier:
         sl     = ai_data.get("sl") or ai_data.get("sl_price", "---")
         badge  = ai_data.get("_badge", "")
         basis  = ai_data.get("basis", ai_data.get("ai_text", ""))[:100]
-        message = (
-            f"\n{badge}\n【ONO Alert】{symbol}\n"
+        text = (
+            f"{badge}\n【ONO Alert】{symbol}\n"
             f"方向: {ai_data.get('direction', 'WAIT')}\n"
             f"現在値: {price:.3f}\n"
             f"確率: {prob}%\n"
@@ -414,9 +431,15 @@ class Notifier:
         )
         try:
             self.session.post(
-                "https://notify-api.line.me/api/notify",
-                headers={"Authorization": f"Bearer {self.line_token}"},
-                data={"message": message},
+                "https://api.line.me/v2/bot/message/push",
+                headers={
+                    "Authorization": f"Bearer {self.line_channel_token}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "to": self.line_user_id,
+                    "messages": [{"type": "text", "text": text[:5000]}],
+                },
                 timeout=5,
             )
         except Exception as e:

@@ -99,8 +99,8 @@ load_dotenv()
 app = FastAPI(title="ONO Estimator Ultra v6.1", version="6.1.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_origins=[],  # 4-3: allow_origin_regex のみで制御（"*"を廃止）
+    allow_origin_regex=r"(https://.*\.vercel\.app|http://localhost:3000|http://localhost:\d+)",
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
     allow_credentials=False,
@@ -275,10 +275,32 @@ def _needs_ai(sym: str) -> bool:
     if _is_market_open(sym): return (now - last) > 58 or score_changed or stale
     return (now - last) > 3600 or score_changed or stale
 
+_gemini_rate_blocked = 0  # 1-2: レート制限ブロック累計カウンター
+
 def _can_gemini() -> bool:
+    # 1-2: レート制限設計 — MAX_GEMINI_PER_MINUTE=2, ANALYSIS_TF="1h" キャッシュ流用
+    # 通知送信ロジック(notifier.py)はAIを呼ばない設計を徹底している
+    global _gemini_rate_blocked
     now = time.time()
     while _gemini_times and now - _gemini_times[0] > 60: _gemini_times.popleft()
-    return len(_gemini_times) < 2  # 1-4: MAX_GEMINI 3→2
+    can = len(_gemini_times) < 2
+    if not can:
+        _gemini_rate_blocked += 1
+        if _gemini_rate_blocked % 10 == 1:  # 10回に1回だけログ（spam防止）
+            _log_gemini_rate_limit()
+    return can
+
+def _log_gemini_rate_limit():
+    """1-2: レート制限発生をSupabaseに記録（呼び出し頻度の可視化）"""
+    try:
+        if db and db.client:
+            db.client.table("system_health").insert({
+                "event": "gemini_rate_limited",
+                "count": _gemini_rate_blocked,
+                "ts": datetime.now().isoformat(),
+            }).execute()
+    except Exception:
+        pass
 
 def _record_gemini(): _gemini_times.append(time.time())
 
@@ -1466,7 +1488,7 @@ async def anti_sleep_loop():
                     }, timeout=5)
                     _anti_sleep_fail_count = 0
                 except Exception: pass
-        await asyncio.sleep(120)
+        await asyncio.sleep(600)  # 4-2: 10分ごとにself-ping（Renderスリープ対策）
 
 
 async def weekly_summary_loop():
@@ -1679,6 +1701,16 @@ async def startup():
     asyncio.create_task(auto_evaluate_loop())
     asyncio.create_task(weekly_summary_loop())  # C-5: 毎週日曜サマリー
     asyncio.create_task(anti_sleep_loop())
+    # 4-1: Engine v2 フォールバック時に Discord 通知（起動時1回）
+    if not _V2:
+        _dw = os.environ.get("DISCORD_WEBHOOK_URL") or os.environ.get("DISCORD_WEBHOOK_AI")
+        if _dw:
+            try:
+                requests.post(_dw, json={
+                    "content": "🔴 **Engine v2 フォールバック中** — Engine v5 で稼働しています。精度が低下している可能性があります。"
+                }, timeout=5)
+            except Exception:
+                pass
 
 
 # ─── API Endpoints ─────────────────────────────────────────────
@@ -1811,6 +1843,82 @@ async def get_macro():
     }
 
 
+@app.get("/api/funda/{symbol}")
+async def get_funda(symbol: str):
+    """3-1: ファンダメンタルデータパネル — FRED/政策金利差/COT/センチメント"""
+    fred = await _get_fred()
+
+    # 政策金利テーブル（主要中銀の現在のレート）
+    RATE_TABLE = {
+        "USD": 5.33, "JPY": 0.10, "EUR": 4.50, "GBP": 5.25,
+        "AUD": 4.35, "CAD": 5.00, "CHF": 1.75, "NZD": 5.50,
+    }
+    sym_upper = symbol.upper()
+    # 通貨ペアから base/quote を推定
+    pairs = {
+        "USDJPY": ("USD","JPY"), "AUDJPY": ("AUD","JPY"),
+        "EURUSD": ("EUR","USD"), "EURJPY": ("EUR","JPY"),
+        "GOLD": ("USD","XAU"), "BTC": ("USD","BTC"),
+        "JP225": ("JPY","IDX"), "XAGUSD": ("USD","XAG"),
+    }
+    base_ccy, quote_ccy = pairs.get(sym_upper, ("USD","JPY"))
+    base_rate  = RATE_TABLE.get(base_ccy, 0)
+    quote_rate = RATE_TABLE.get(quote_ccy, 0)
+    rate_diff  = round(base_rate - quote_rate, 2)
+    rate_badge = "🟢" if rate_diff > 1 else "🔴" if rate_diff < -1 else "🟡"
+
+    # FRED指標
+    dxy   = (fred.get("DTWEXBGS") or fred.get("DXY") or {}).get("value")
+    vix   = (fred.get("VIXCLS") or {}).get("value")
+    us10y = (fred.get("DGS10") or {}).get("value")
+
+    # センチメント（VIX ベース Fear & Greed）
+    sentiment = {"fear_greed": 50, "label": "中立"}
+    if _HAS_SENTIMENT and vix:
+        try:
+            fg = calc_fx_fear_greed(float(vix), 0, 0)
+            sentiment = {"fear_greed": fg.get("index", 50), "label": fg.get("label", "中立")}
+        except Exception: pass
+
+    # COT データ（system_state から取得）
+    ticker = {
+        "USDJPY":"USDJPY=X","GOLD":"GC=F","BTC":"BTC-USD",
+        "JP225":"^N225","XAGUSD":"SI=F","AUDJPY":"AUDJPY=X",
+        "EURUSD":"EURUSD=X","EURJPY":"EURJPY=X",
+    }.get(sym_upper, sym_upper)
+    ref = system_state.get(ticker, {}).get(ANALYSIS_TF, {})
+    cot_score = ref.get("cot_score", 0)
+    cot_signal = "BUY" if cot_score > 5 else "SELL" if cot_score < -5 else "NEUTRAL"
+
+    # セッション情報
+    sess_info = _get_session_info()
+    sess_label_map = {"tokyo":"東京（中ボラ）","london":"ロンドン（高ボラ）","ny":"NY（高ボラ）","off":"オフ（低ボラ）"}
+    sess_label = sess_label_map.get(sess_info.get("current",""), "---")
+
+    return {
+        "symbol": symbol,
+        "rate_diff": {
+            "base": base_ccy, "base_rate": base_rate,
+            "quote": quote_ccy, "quote_rate": quote_rate,
+            "diff": rate_diff, "badge": rate_badge,
+        },
+        "fred": {
+            "DXY":   round(float(dxy), 2) if dxy else None,
+            "VIX":   round(float(vix), 2) if vix else None,
+            "US10Y": round(float(us10y), 3) if us10y else None,
+        },
+        "cot": {
+            "net_position": cot_score,
+            "signal": cot_signal,
+            "score_bonus": abs(cot_score) // 10,
+        },
+        "sentiment": sentiment,
+        "session": sess_label,
+        "next_event": None,  # 将来: イベントカレンダー連携
+        "ts": int(time.time()),
+    }
+
+
 @app.get("/api/market/status")
 def market_status():
     if not _HAS_MARKET:
@@ -1899,53 +2007,67 @@ def edge(symbol: str):
 
 
 @app.get("/api/forecast/{symbol}")
-def forecast(symbol: str):
-    mapping = {
+def forecast(symbol: str, tf: str = Query("1h", pattern="^(1m|5m|15m|30m|1h|4h)$")):
+    """2-1: 予測チャート用エンドポイント — zigzag_points形式（offset_bars + type + probability）"""
+    _SYM_MAP = {
         "USDJPY": "USDJPY=X","GOLD":"GC=F","BTC":"BTC-USD",
         "JP225":"^N225","XAGUSD":"SI=F","AUDJPY":"AUDJPY=X",
         "EURUSD":"EURUSD=X","EURJPY":"EURJPY=X",
     }
-    ticker = mapping.get(symbol.upper(), symbol)
-    ref = system_state.get(ticker, {}).get(ANALYSIS_TF, {})
-    price = price_cache.get(ticker, 0)
-    prob  = ref.get("probability", 0)
+    ticker = _SYM_MAP.get(symbol.upper(), symbol)
+    ref    = system_state.get(ticker, {}).get(ANALYSIS_TF, {})
+    price  = price_cache.get(ticker, 0)
+    prob   = ref.get("probability", 0)
+    direction = ref.get("status", "WAIT")
+    hold   = ref.get("hold_time_minutes", 60) or 60
 
-    # 予測ポイント生成（TP1/TP2から算出）
-    points = []
-    now_jst = datetime.now(timezone.utc) + timedelta(hours=9)
-    hold = ref.get("hold_time_minutes", 60) or 60
-    tw = ref.get("time_window", {})
+    # TF別のbar数オフセット計算（分→bar数）
+    tf_minutes = {"1m":1,"5m":5,"15m":15,"30m":30,"1h":60,"4h":240}
+    tf_min = tf_minutes.get(tf, 60)
 
     tp1 = ref.get("tp1", 0)
     tp2 = ref.get("tp2", 0)
-    atr = abs(tp1 - price) if tp1 and price else price * 0.005
+    tp3 = ref.get("tp3", ref.get("tp2", 0))
+    sl  = ref.get("sl", 0)
+    atr = ref.get("atr", abs(tp1 - price) if tp1 and price else (price or 1) * 0.003)
 
+    zigzag_points = []
+    if tp1 and price:
+        bars1 = max(1, round(hold / tf_min))
+        prob_tp1 = min(95, round(prob * 0.95))
+        zigzag_points.append({"offset_bars": bars1, "price": round(tp1, 5), "type": "TP1", "probability": prob_tp1})
+    if tp2 and price:
+        bars2 = max(2, round(hold * 2 / tf_min))
+        prob_tp2 = min(85, round(prob * 0.7))
+        zigzag_points.append({"offset_bars": bars2, "price": round(tp2, 5), "type": "TP2", "probability": prob_tp2})
+    if sl and price:
+        bars_sl = max(1, round(hold * 0.6 / tf_min))
+        zigzag_points.append({"offset_bars": bars_sl, "price": round(sl, 5), "type": "SL", "probability": round(100 - prob)})
+
+    # 後方互換: forecast_points も維持
+    now_jst = datetime.now(timezone.utc) + timedelta(hours=9)
+    tw = ref.get("time_window", {})
+    legacy_points = []
     if tp1:
-        t1 = now_jst + timedelta(minutes=hold)
-        points.append({
-            "time": t1.isoformat(),
-            "price": tp1,
-            "confidence_upper": round(tp1 + atr * 0.5, 5),
-            "confidence_lower": round(tp1 - atr * 0.5, 5),
-        })
+        legacy_points.append({"time": (now_jst + timedelta(minutes=hold)).isoformat(), "price": tp1,
+                               "confidence_upper": round(tp1 + atr * 0.5, 5), "confidence_lower": round(tp1 - atr * 0.5, 5)})
     if tp2:
-        t2 = now_jst + timedelta(minutes=hold*2)
-        points.append({
-            "time": t2.isoformat(),
-            "price": tp2,
-            "confidence_upper": round(tp2 + atr, 5),
-            "confidence_lower": round(tp2 - atr, 5),
-        })
+        legacy_points.append({"time": (now_jst + timedelta(minutes=hold*2)).isoformat(), "price": tp2,
+                               "confidence_upper": round(tp2 + atr, 5), "confidence_lower": round(tp2 - atr, 5)})
 
     return {
         "symbol": symbol,
         "current_price": price,
-        "forecast_points": points,
+        "zigzag_points": zigzag_points,
+        "direction": direction.replace("STRONG_", ""),
+        "scenario": "A" if prob >= 65 else "B" if prob >= 45 else "C",
+        "forecast_points": legacy_points,
         "entry": ref.get("entry", price),
-        "sl": ref.get("sl", 0),
+        "sl": sl,
         "time_window": tw,
         "basis": ref.get("basis", ""),
         "probability": prob,
+        "atr": round(atr, 5) if atr else 0,
         "generated_at": now_jst.isoformat(),
         "cached": ref.get("cached", False),
     }
@@ -2276,6 +2398,10 @@ async def system_status():
             "trade_monitor": _HAS_MONITOR, "cot": _HAS_COT,
             "demo_trader": demo_trader is not None,
         },
+        # 4-1: エンジン稼働状態
+        "engine_version": "v2" if _V2 else "v5",
+        "engine_status": "normal" if _V2 else "fallback",
+        "gemini_rate_blocked_total": _gemini_rate_blocked,
     }
 
 

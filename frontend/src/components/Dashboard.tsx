@@ -12,6 +12,8 @@ import {
 import { useWindowSize } from "../hooks/useWindowSize";
 
 const TradingViewChart = dynamic(() => import("./TradingViewChart"), { ssr: false });
+const ForecastChart    = dynamic(() => import("./ForecastChart"),    { ssr: false });
+const FundaPanel       = dynamic(() => import("./FundaPanel"),       { ssr: false });
 
 // ─── API ──────────────────────────────────────────────────────
 const API_URL = (process.env.NEXT_PUBLIC_API_URL || "https://ono-estimator.onrender.com").replace(/\/$/, "");
@@ -995,7 +997,7 @@ function MissedSignalsPanel({ raw }: { raw: any }) {
 export default function Dashboard() {
   const [activeSymbol, setActiveSymbol] = useState("USDJPY");
   const [activeTF, setActiveTF] = useState("1h");
-  const [activeTab, setActiveTab] = useState<"main"|"multi"|"history"|"ai"|"demo"|"debug">("main");
+  const [activeTab, setActiveTab] = useState<"main"|"multi"|"history"|"ai"|"demo"|"debug"|"forecast"|"funda">("main");
   const [margin, setMargin] = useState("1000000");
   const [lot, setLot] = useState("0.1");
   const [session, setSession] = useState(getCurrentSession());
@@ -1062,6 +1064,11 @@ export default function Dashboard() {
   const { data: sysStatusRaw } = useSWR(
     activeTab === "debug" ? `${API_URL}/api/system/status` : null, fetcher,
     { ...swrOpts, refreshInterval: 15000 }
+  );
+  // 4-1: エンジン状態（常時取得）
+  const { data: engineStatusRaw } = useSWR(
+    `${API_URL}/api/status`, fetcher,
+    { ...swrOpts, refreshInterval: 60000 }
   );
   // M-9: デモ売買成績
   const { data: demoRaw, mutate: mutateDemo } = useSWR(
@@ -1226,6 +1233,18 @@ export default function Dashboard() {
             <Radio size={10} style={{ display: "inline", marginRight: 5 }} />
             {session.name}セッション
           </div>
+          {/* 4-1: エンジンバッジ */}
+          {engineStatusRaw && (
+            <div style={{
+              background: engineStatusRaw.engine_v2 ? "rgba(34,211,238,0.08)" : "rgba(251,113,133,0.12)",
+              border: `1px solid ${engineStatusRaw.engine_v2 ? "rgba(34,211,238,0.3)" : "rgba(251,113,133,0.4)"}`,
+              borderRadius: 20, padding: "3px 10px", fontSize: 11,
+              color: engineStatusRaw.engine_v2 ? "#22d3ee" : "#fb7185", fontWeight: 700,
+            }}>
+              <Cpu size={10} style={{ display: "inline", marginRight: 4 }} />
+              {engineStatusRaw.engine_v2 ? "Engine v2 ✓" : "⚠ Engine v5 (フォールバック)"}
+            </div>
+          )}
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
@@ -1313,12 +1332,14 @@ export default function Dashboard() {
           padding: "0 24px", display: "flex", gap: 4,
         }}>
           {([
-            { id: "main",    label: "シグナル",  icon: <Crosshair size={14} /> },
-            { id: "multi",   label: "全銘柄",    icon: <Globe size={14} /> },
-            { id: "history", label: "パフォーマンス", icon: <Trophy size={14} /> },
-            { id: "ai",      label: "AI分析",    icon: <Brain size={14} /> },
-            { id: "demo",    label: "デモ売買",  icon: <Target size={14} /> },
-            { id: "debug",   label: "診断",      icon: <Activity size={14} /> },
+            { id: "main",     label: "シグナル",  icon: <Crosshair size={14} /> },
+            { id: "forecast", label: "予測",      icon: <TrendingUp size={14} /> },
+            { id: "funda",    label: "ファンダ",  icon: <Globe size={14} /> },
+            { id: "multi",    label: "全銘柄",    icon: <BarChart2 size={14} /> },
+            { id: "history",  label: "成績",      icon: <Trophy size={14} /> },
+            { id: "ai",       label: "AI分析",    icon: <Brain size={14} /> },
+            { id: "demo",     label: "デモ",      icon: <Target size={14} /> },
+            { id: "debug",    label: "診断",      icon: <Activity size={14} /> },
           ] as const).map(({ id, label, icon }) => (
             <button key={id} onClick={() => setActiveTab(id)} style={{
               background: activeTab === id ? "rgba(34,211,238,0.1)" : "transparent",
@@ -1342,11 +1363,11 @@ export default function Dashboard() {
           height: 60, display: "flex", alignItems: "stretch",
         }}>
           {([
-            { id: "main",    label: "シグナル", icon: <Crosshair size={18} /> },
-            { id: "multi",   label: "全銘柄",   icon: <Globe size={18} /> },
-            { id: "history", label: "成績",     icon: <Trophy size={18} /> },
-            { id: "ai",      label: "AI",       icon: <Brain size={18} /> },
-            { id: "demo",    label: "デモ",     icon: <Target size={18} /> },
+            { id: "main",     label: "シグナル", icon: <Crosshair size={18} /> },
+            { id: "forecast", label: "予測",     icon: <TrendingUp size={18} /> },
+            { id: "funda",    label: "ファンダ", icon: <Globe size={18} /> },
+            { id: "history",  label: "成績",     icon: <Trophy size={18} /> },
+            { id: "ai",       label: "AI",       icon: <Brain size={18} /> },
           ] as const).map(({ id, label, icon }) => (
             <button key={id} onClick={() => setActiveTab(id)} style={{
               flex: 1, background: "transparent", border: "none",
@@ -2313,6 +2334,31 @@ export default function Dashboard() {
                 );
               })}
             </div>
+          </div>
+        )}
+
+        {/* ══════════ TAB: FORECAST ══════════ */}
+        {activeTab === "forecast" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+            <div style={{ fontSize: 18, fontWeight: 800, color: "#f1f5f9" }}>
+              予測チャート — {SYMBOL_DISPLAY[activeSymbol] || activeSymbol}
+            </div>
+            <ForecastChart symbol={activeSymbol} tf={activeTF} chartBars={chartData} />
+          </div>
+        )}
+
+        {/* ══════════ TAB: FUNDA ══════════ */}
+        {activeTab === "funda" && (
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: isMobile ? "1fr" : isTablet ? "1fr 1fr" : "repeat(3, 1fr)",
+            gap: 20,
+          }}>
+            {SYMBOLS.map(sym => (
+              <div key={sym} onClick={() => setActiveSymbol(sym)} style={{ cursor: "pointer" }}>
+                <FundaPanel symbol={sym} />
+              </div>
+            ))}
           </div>
         )}
 
