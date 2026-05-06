@@ -362,6 +362,40 @@ class Notifier:
         except Exception as e:
             logger.error(f"[Notifier] send_demo_result error: {e}")
 
+    def send_now_auto_entry(self, sym: str, ai_data: dict, score: int, prob: int) -> None:
+        """⚡ entry_timing==NOW 自動エントリー Discord通知"""
+        webhook = self.default_webhook
+        if not webhook:
+            return
+        direction = ai_data.get("direction", "WAIT")
+        entry  = ai_data.get("entry") or ai_data.get("entry_price", 0)
+        tp1    = ai_data.get("tp1") or ai_data.get("tp_price", 0)
+        sl     = ai_data.get("sl") or ai_data.get("sl_price", 0)
+        reason = ai_data.get("entry_reason_short", "")[:150]
+        style  = (ai_data.get("trade_style") or {}).get("main_style", "")
+        hold   = (ai_data.get("trade_style") or {}).get("hold_time", "")
+        short_sym = sym.replace("_", "").replace("/", "")[:10]
+        sep = "━" * 17
+        dir_icon = "🟢" if "BUY" in direction else "🔴"
+        msg = "\n".join([
+            f"⚡ **NOW AUTO-ENTRY** {dir_icon}",
+            f"**{short_sym}** {direction}",
+            sep,
+            f"📍 根拠: {reason}",
+            f"💰 Entry: {entry} | TP: {tp1} | SL: {sl}",
+            f"📊 Score: {score} | 確率: {prob}%",
+            f"🎯 {style} | 保有: {hold}",
+            f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M JST')}",
+        ])
+        try:
+            payload = {
+                "username": "ONO Estimator ⚡NOW",
+                "embeds": [{"description": msg[:2000], "color": 0xFFD700}],
+            }
+            self.session.post(webhook, json=payload, timeout=5)
+        except Exception as e:
+            logger.error(f"[Notifier] send_now_auto_entry error: {e}")
+
     # ─── LINE 送信 ────────────────────────────────────────────
     def _send_line(self, symbol: str, score: float, ai_data: dict, price: float, session: str):
         prob   = ai_data.get("probability", "---")

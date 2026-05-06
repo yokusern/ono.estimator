@@ -323,6 +323,7 @@ def _load_history_stats() -> dict:
     except Exception: return {}
 
 def _get_feedback(sym: str) -> str:
+    """C-4: スコア帯別勝率 + 直近パターンをGeminiにフィードバック"""
     try:
         history = db.get_history(limit=100)
         key = _short(sym)
@@ -332,13 +333,53 @@ def _get_feedback(sym: str) -> str:
             return perf or "学習データ蓄積中..."
         scored  = [r for r in rows if r.get("is_scored")]
         correct = [r for r in rows if r.get("is_correct")]
-        wr = round(len(correct)/len(scored)*100,1) if scored else None
+        wr = round(len(correct)/len(scored)*100, 1) if scored else None
         lines = [f"【{key}実績】採点{len(scored)}件 勝率{wr if wr else 'N/A'}%"]
-        for r in rows[:3]:
+        # C-4: スコア帯別勝率（Geminiが参考にしてバイアス修正する）
+        bands: dict = {"30-49": [], "50-69": [], "70+": []}
+        for r in scored:
+            s = abs(r.get("score", 0))
+            win = bool(r.get("is_correct"))
+            if s >= 70:   bands["70+"].append(win)
+            elif s >= 50: bands["50-69"].append(win)
+            elif s >= 30: bands["30-49"].append(win)
+        for band, results in bands.items():
+            if results:
+                bwr = round(sum(results) / len(results) * 100)
+                lines.append(f"  スコア{band}: {len(results)}件 勝率{bwr}% {'→ 信頼度高' if bwr >= 60 else '→ 要注意'}")
+        for r in rows[:5]:
             tag = "✓WIN" if r.get("is_correct") else ("✗LOSS" if r.get("is_scored") else "pending")
-            lines.append(f"  {r.get('status','?')} score:{r.get('score',0)} {tag}")
+            lines.append(f"  {r.get('status','?')} sc:{r.get('score',0)} {tag}")
         return "\n".join(lines)
     except Exception as e: return f"History error: {e}"
+
+
+def _detect_entry_tags(engine_signals: dict, ai_data: dict) -> list:
+    """D-5: エントリーパターンの自動タグ付け"""
+    tags = []
+    es = engine_signals or {}
+    # エントリータイプタグ
+    if es.get("ls_detected") or es.get("liq_bull_rebreak") or es.get("liq_bear_rebreak"):
+        tags.append("#liquidity_sweep")
+    et = ai_data.get("entry_type", "NONE")
+    if et == "BODY_BREAK":  tags.append("#body_break")
+    if et == "WICK_DENIAL": tags.append("#wick_denial")
+    if et == "HAS_SHOULDER": tags.append("#hs_pattern")
+    # テクニカルパターン
+    if es.get("saneki_ko") or es.get("saneki_gyaku"): tags.append("#saneki")
+    if es.get("macd_divergence") not in ("None", None, ""): tags.append("#macd_div")
+    if es.get("rsi_bull_div") or es.get("rsi_bear_div"): tags.append("#rsi_div")
+    if es.get("elliott_wave3"): tags.append("#elliott_w3")
+    if es.get("squeeze_released"): tags.append("#bb_squeeze_break")
+    # スタイルタグ
+    style = (ai_data.get("trade_style") or {}).get("main_style", "")
+    if "スキャル" in style: tags.append("#scalp")
+    elif "デイトレ" in style: tags.append("#day")
+    elif "スイング" in style: tags.append("#swing")
+    # セッションタグ
+    sess = es.get("session", "")
+    if sess: tags.append(f"#{sess.lower()}")
+    return tags
 
 
 def _check_daily_lock() -> bool:
@@ -1323,25 +1364,49 @@ async def ai_loop():
                         })
                     except Exception: pass
 
-                # H-11: DemoTrader エントリー
-                if not is_locked and should_demo and demo_trader:
+                # H-11/A-5: DemoTrader エントリー (should_enter_demo OR entry_timing==NOW)
+                direction_val = ai_data.get("direction", "WAIT")
+                is_now_entry = (
+                    entry_timing.get("timing") == "NOW"
+                    and direction_val in ("BUY", "SELL", "STRONG_BUY", "STRONG_SELL")
+                    and not ai_data.get("is_range", False)
+                    and abs(score) >= 30
+                )
+                final_should_demo = (not is_locked) and (should_demo or is_now_entry) and demo_trader
+                if final_should_demo:
                     entry = ai_data.get("entry_price") or ai_data.get("entry", 0)
                     tp    = ai_data.get("tp_price")    or ai_data.get("tp1", 0)
                     sl    = ai_data.get("sl_price")    or ai_data.get("sl", 0)
-                    reason = ai_data.get("awareness_text", ai_data.get("basis", ""))
+                    reason_base = ai_data.get("entry_reason_short") or ai_data.get("awareness_text", "")
+                    reason = reason_base + (" [AUTO⚡NOW]" if is_now_entry and not should_demo else "")
                     if entry and tp and sl:
-                        demo_trader.open_position(
-                            _short(sym), ai_data.get("direction", "WAIT"),
+                        opened = demo_trader.open_position(
+                            _short(sym), direction_val,
                             entry, tp, sl, reason
                         )
+                        # NOW自動エントリー専用Discordアラート
+                        if opened and is_now_entry and not should_demo:
+                            try:
+                                notifier.send_now_auto_entry(sym, ai_data, score, prob)
+                            except Exception as _ne:
+                                print(f"[NOW-Entry] Discord notify failed: {_ne}")
+
+                # D-5: エントリータグ保存
+                _entry_tags = _detect_entry_tags(engine_signals, ai_data)
+                if _entry_tags:
+                    try:
+                        async with system_state_lock:
+                            for tf in TIMEFRAMES:
+                                system_state[sym][tf]["entry_tags"] = _entry_tags
+                    except Exception: pass
 
             except Exception as e:
                 print(f"[AILoop] {sym}: {e}")
                 traceback.print_exc()
 
-            await asyncio.sleep(15)  # 銘柄間インターバル
+            await asyncio.sleep(10)  # B-3: 15→10s（全銘柄2分以内スキャン）
 
-        await asyncio.sleep(30)  # 全銘柄完了後に待機
+        await asyncio.sleep(15)  # B-3: 30→15s
 
 
 async def backtest_loop():
@@ -1402,6 +1467,47 @@ async def anti_sleep_loop():
                     _anti_sleep_fail_count = 0
                 except Exception: pass
         await asyncio.sleep(120)
+
+
+async def weekly_summary_loop():
+    """C-5: 毎週日曜23:30 JST に週次サマリーをDiscord通知"""
+    await asyncio.sleep(60)
+    _sent_week = ""
+    while True:
+        try:
+            jst_now = datetime.utcnow().replace(tzinfo=None) + timedelta(hours=9)
+            week_key = jst_now.strftime("%Y-W%W")
+            if jst_now.weekday() == 6 and jst_now.hour == 23 and 25 <= jst_now.minute <= 35:
+                if _sent_week != week_key:
+                    _sent_week = week_key
+                    # 週次サマリーをDiscordに送信
+                    try:
+                        from datetime import timedelta as _td
+                        one_week_ago = (datetime.utcnow() - _td(days=7)).isoformat()
+                        perf = {}
+                        if db.client:
+                            r = db.client.table("performance_log")\
+                                .select("outcome,pips_result,symbol")\
+                                .gte("created_at", one_week_ago).execute()
+                            rows2 = r.data or []
+                            total = len([x for x in rows2 if x.get("outcome") in ("WIN","LOSS")])
+                            wins  = len([x for x in rows2 if x.get("outcome") == "WIN"])
+                            wr2   = round(wins/total*100, 1) if total else 0
+                            pips2 = sum(x.get("pips_result") or 0 for x in rows2)
+                            msg = (
+                                f"📊 **週次サマリー ({jst_now.strftime('%Y/%m/%d')})**\n"
+                                f"トレード数: {total} | 勝率: {wr2}% | 総pips: {pips2:.1f}\n"
+                            )
+                        else:
+                            msg = f"📊 週次サマリー: DB未接続"
+                        webhook = os.environ.get("DISCORD_WEBHOOK_URL","")
+                        if webhook:
+                            requests.post(webhook, json={"content": msg}, timeout=5)
+                    except Exception as _we:
+                        print(f"[WeeklySummary] Discord error: {_we}")
+        except Exception as e:
+            print(f"[WeeklyLoop] {e}")
+        await asyncio.sleep(300)  # 5分毎チェック
 
 
 async def auto_evaluate_loop():
@@ -1571,6 +1677,7 @@ async def startup():
     asyncio.create_task(trade_monitor_loop())
     asyncio.create_task(scanner_loop())
     asyncio.create_task(auto_evaluate_loop())
+    asyncio.create_task(weekly_summary_loop())  # C-5: 毎週日曜サマリー
     asyncio.create_task(anti_sleep_loop())
 
 
