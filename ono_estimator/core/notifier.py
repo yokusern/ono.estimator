@@ -33,6 +33,22 @@ class Notifier:
         # B-1: シグナルキー + タイムスタンプ管理（30分窓デバウンス）
         self._last_signal_key: dict = {}   # {sym: (key, timestamp)}
 
+    def _display_symbol(self, symbol: str) -> str:
+        s = (symbol or "").upper()
+        mapping = {
+            "GC=F": "gold",
+            "GOLD": "gold",
+            "SI=F": "silver",
+            "XAGUSD": "silver",
+            "BTC-USD": "btc",
+            "USDJPY=X": "usdjpy",
+            "EURUSD=X": "eurusd",
+            "EURJPY=X": "eurjpy",
+            "AUDJPY=X": "audjpy",
+            "^N225": "jp225",
+        }
+        return mapping.get(s, s.lower())
+
     # ─── H-4: シグナルキー生成 ─────────────────────────────────
     def _make_signal_key(self, symbol: str, direction: str, price: float) -> str:
         """銘柄の価格精度に合わせてキーを生成する。同一価格帯・方向の連続発火を防ぐ。"""
@@ -168,10 +184,11 @@ class Notifier:
 
         rr_str = f"{rr:.2f}" if isinstance(rr, float) else str(rr)
 
+        disp = self._display_symbol(symbol)
         description = (
             f"```\n"
             f"{badge}\n"
-            f"{dir_icon} {direction} — {symbol} {mention}\n"
+            f"{dir_icon} {direction} — {disp} {mention}\n"
             f"{'━' * 35}\n"
             f"📊 確率: {probability}% | {sq_icon} {signal_quality}\n"
             f"📐 Entry: {entry} | TP: {tp1} | TP2: {tp2} | SL: {sl} | RR: {rr_str}\n"
@@ -274,7 +291,7 @@ class Notifier:
         basis = entry_reason_short or (ai_text[:80] if ai_text else awareness[:80])
 
         msg_lines = [
-            f"🎯 **【{symbol} {direction}】{style_emoji}{style_label}**",
+            f"🎯 **【{self._display_symbol(symbol)} {direction}】{style_emoji}{style_label}**",
             sep,
         ]
 
@@ -338,7 +355,7 @@ class Notifier:
         webhook = self.default_webhook
         if not webhook:
             return
-        sym       = pos.get("symbol", "")
+        sym       = self._display_symbol(pos.get("symbol", ""))
         direction = pos.get("direction", "")
         entry     = pos.get("entry_price", 0)
         reason    = pos.get("reason", "")

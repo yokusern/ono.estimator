@@ -7,17 +7,19 @@ from typing import Optional
 
 
 class DemoTrader:
-    def __init__(self, db, ai_analyzer=None):
+    def __init__(self, db, ai_analyzer=None, on_close=None):
         self.db = db
         self.ai_analyzer = ai_analyzer  # 自己反省生成用（後から注入も可）
         self.open_positions: dict = {}
+        self.on_close = on_close
 
     def set_ai_analyzer(self, ai_analyzer) -> None:
         """サーバー起動後にai_analyzerを注入する"""
         self.ai_analyzer = ai_analyzer
 
     def open_position(self, sym: str, direction: str, entry: float,
-                      tp: float, sl: float, reason: str = "") -> bool:
+                      tp: float, sl: float, reason: str = "", lot: float = 0.1,
+                      tier: str = "", route: str = "") -> bool:
         if sym in self.open_positions:
             return False
         if not entry or not tp or not sl:
@@ -28,7 +30,10 @@ class DemoTrader:
             "entry_price": entry,
             "tp_price":    tp,
             "sl_price":    sl,
+            "lot":         lot,
             "reason":      reason,
+            "tier":        tier,
+            "route":       route,
             "opened_at":   datetime.now().isoformat(),
             "status":      "OPEN",
         }
@@ -85,6 +90,11 @@ class DemoTrader:
                                               ai_lesson=ai_lesson)
                 except Exception as e:
                     print(f"[DemoTrader] Notify failed: {e}")
+                if self.on_close:
+                    try:
+                        self.on_close(pos, result)
+                    except Exception as e:
+                        print(f"[DemoTrader] on_close callback failed: {e}")
                 print(f"[DemoTrader] CLOSE {sym} {result} @ {p} pips={pips:.1f}")
 
     def get_open_positions(self) -> dict:

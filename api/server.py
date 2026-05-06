@@ -24,6 +24,8 @@ from ono_estimator.core.hybrid_fetcher import HybridDataFetcher
 from ono_estimator.core.ai_analyzer import GeminiAnalyzer
 from ono_estimator.core.database import SupabaseClient
 from ono_estimator.core.notifier import Notifier
+from ono_estimator.execution import ExecutionEngine, ExecutionInput
+from ono_estimator.execution.config import SPREAD_MAX_BY_SYMBOL
 
 # ─── Engine v2 ─────────────────────────────────────────────────
 try:
@@ -255,11 +257,14 @@ ai_analyzer.set_db(db)
 notifier    = Notifier(db=db)
 backtester  = Backtester(db, price_cache) if _HAS_BACKTEST else None
 trade_mon   = TradeMonitor(db, notifier) if _HAS_MONITOR else None
+execution_engine = ExecutionEngine()
 
 # H-11: DemoTrader（ai_analyzerを注入して自己学習ループを完成）
 try:
     from ono_estimator.core.demo_trader import DemoTrader
-    demo_trader = DemoTrader(db, ai_analyzer=ai_analyzer)
+    def _on_demo_close(pos: dict, result: str):
+        execution_engine.record_result(pos.get("tier"), result)
+    demo_trader = DemoTrader(db, ai_analyzer=ai_analyzer, on_close=_on_demo_close)
     print("[Server] DemoTrader loaded ✅")
 except Exception as _e:
     demo_trader = None
@@ -292,6 +297,10 @@ def get_active_session(utc_hour: int) -> str:
     if 13 <= utc_hour < 16:  return "NY_Overlap（最高ボラ・最重要）"
     if 16 <= utc_hour < 21:  return "NY（高ボラ）"
     return "Off-hours"
+
+def _estimate_spread(sym: str) -> float:
+    s = _short(sym).upper()
+    return SPREAD_MAX_BY_SYMBOL.get(s, 2.0) * 0.5
 
 def _needs_ai(sym: str) -> bool:
     """H-1: 時間経過 or スコアが±10以上変化した場合にAI呼び出し。
@@ -1508,6 +1517,72 @@ async def ai_loop():
                     should_demo = True
                     ai_data["should_enter_demo"] = True
 
+                # ── Execution層（厳格判定）────────────────────────────
+                # Signal層の should_demo は参考値。実エントリー可否はExecutionEngineで最終決定。
+                key_levels = engine_signals.get("key_levels", {}) or {}
+                current_px = float(engine_signals.get("current_price", 0) or price_cache.get(sym, 0) or 0)
+                entry_px = float(ai_data.get("entry_price") or ai_data.get("entry", 0) or ref_state.get("entry", 0) or current_px)
+                sl_px = float(ai_data.get("sl_price") or ai_data.get("sl", 0) or ref_state.get("sl", 0) or 0)
+                tp_px = float(ai_data.get("tp_price") or ai_data.get("tp1", 0) or ref_state.get("tp1", 0) or 0)
+                rr_val = float(ref_state.get("rr", 0) or ai_data.get("rr_ratio", 0) or 0)
+                if rr_val <= 0 and entry_px and sl_px and tp_px:
+                    risk = abs(entry_px - sl_px)
+                    reward = abs(tp_px - entry_px)
+                    rr_val = (reward / risk) if risk > 0 else 0.0
+                nearest_levels = []
+                for k in ("R", "S"):
+                    vals = key_levels.get(k) if isinstance(key_levels, dict) else None
+                    if isinstance(vals, list):
+                        nearest_levels.extend([float(v) for v in vals if isinstance(v, (int, float))])
+                wall_distance = min([abs(lv - current_px) for lv in nearest_levels], default=10**9) if current_px else 10**9
+                sl_width = abs(entry_px - sl_px) if entry_px and sl_px else 0.0
+                confirmations = 0
+                if engine_signals.get("detected_entry_type", "NONE") != "NONE":
+                    confirmations += 1
+                if engine_signals.get("entry_decision", "WAIT") in ("BUY", "SELL"):
+                    confirmations += 1
+                if entry_timing.get("timing") == "NOW":
+                    confirmations += 1
+                if engine_signals.get("mtf_confluence_count", 0) >= 4:
+                    confirmations += 1
+                pullback_ok = bool(engine_signals.get("near_fib_level")) or engine_signals.get("detected_entry_type", "NONE") != "NONE"
+                range_edge_ok = False
+                if ai_data.get("is_range", False) and current_px:
+                    r_high = float(engine_signals.get("range_high", 0) or 0)
+                    r_low = float(engine_signals.get("range_low", 0) or 0)
+                    if r_high > r_low:
+                        band = r_high - r_low
+                        if direction_val == "BUY":
+                            range_edge_ok = current_px <= (r_low + band * 0.35)
+                        elif direction_val == "SELL":
+                            range_edge_ok = current_px >= (r_high - band * 0.35)
+
+                ex_input = ExecutionInput(
+                    symbol=_short(sym),
+                    direction=direction_val,
+                    score=float(score),
+                    rr=float(rr_val),
+                    is_range=bool(ai_data.get("is_range", False)),
+                    timing=(entry_timing.get("timing") or "WAIT"),
+                    mtf_confluence_count=int(engine_signals.get("mtf_confluence_count", 0) or 0),
+                    current_price=current_px,
+                    entry_price=entry_px,
+                    stop_loss=sl_px,
+                    take_profit=tp_px,
+                    spread=_estimate_spread(sym),
+                    spread_max=SPREAD_MAX_BY_SYMBOL.get(_short(sym).upper(), 2.0),
+                    daily_lock=bool(is_locked),
+                    wall_distance=wall_distance if wall_distance < 10**8 else (sl_width * 10 if sl_width else 9999),
+                    confirmations=confirmations,
+                    pullback_ok=bool(pullback_ok),
+                    range_edge_ok=bool(range_edge_ok),
+                    l_base=float(os.environ.get("EXECUTION_BASE_LOT", "0.1")),
+                )
+                exec_decision = execution_engine.evaluate(ex_input)
+                print(exec_decision.log_line)
+                should_demo = bool(exec_decision.should_trade)
+                ai_data["should_enter_demo"] = should_demo
+
                 # L-2: Correlation Guard
                 notify_allowed = _corr_filter_allow(sym, score, notify_threshold)
 
@@ -1599,7 +1674,7 @@ async def ai_loop():
                     and not ai_data.get("is_range", False)
                     and abs(score) >= 20
                 )
-                final_should_demo = (not is_locked) and (should_demo or is_now_entry) and demo_trader
+                final_should_demo = (not is_locked) and should_demo and demo_trader
                 if final_should_demo:
                     entry = (
                         ai_data.get("entry_price")
@@ -1629,7 +1704,10 @@ async def ai_loop():
                     if entry and tp and sl:
                         opened = demo_trader.open_position(
                             _short(sym), direction_val,
-                            entry, tp, sl, reason
+                            entry, tp, sl, reason,
+                            lot=(exec_decision.lot if 'exec_decision' in locals() else 0.1),
+                            tier=(exec_decision.tier if 'exec_decision' in locals() else ""),
+                            route=(exec_decision.route if 'exec_decision' in locals() else ""),
                         )
                         # NOW自動エントリー専用Discordアラート
                         if opened and is_now_entry and not should_demo:
