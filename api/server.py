@@ -116,6 +116,17 @@ SYM_SHORT = {
 TIMEFRAMES  = ["1m", "5m", "15m", "30m", "1h", "4h"]
 ANALYSIS_TF = "1h"
 RENDER_URL  = os.environ.get("RENDER_EXTERNAL_URL", "https://ono-estimator.onrender.com")
+
+# TASK 1/2/3: pipsターゲット連動ウィンドウ設定
+try:
+    from ono_estimator.core.pips_config import get_window_config, DEFAULT_TARGET_PIPS, get_trade_style
+    _pips_config = get_window_config(DEFAULT_TARGET_PIPS)
+    _HAS_PIPS_CONFIG = True
+except Exception as _pe:
+    _HAS_PIPS_CONFIG = False
+    DEFAULT_TARGET_PIPS = 20
+    _pips_config = {"primary": {"tf": "5m", "bars": 48}, "confirm": {"tf": "15m", "bars": 8}, "context": {"tf": "1h", "bars": 6}, "hold_minutes": 60}
+    print(f"[PipsConfig] fallback: {_pe}")
 if RENDER_URL and not RENDER_URL.startswith("http"):
     RENDER_URL = f"https://{RENDER_URL}"
 
@@ -460,6 +471,23 @@ def _calc_mtf_confluence(sym: str) -> dict:
         "is_max_confluence": score == total,
         "pct": round(score / total * 100, 0) if total else 0,
     }
+
+
+# TASK 6: 3層合意スコア
+def calc_agreement_score(context_dir: str, confirm_dir: str, primary_dir: str) -> float:
+    """
+    context / confirm / primary の方向一致度でスコア倍率を返す。
+    全一致→1.0 / 2/3一致→0.7 / 不一致→0.3
+    """
+    dirs = [context_dir, confirm_dir, primary_dir]
+    buy_count  = sum(1 for d in dirs if d and "BUY"  in d)
+    sell_count = sum(1 for d in dirs if d and "SELL" in d)
+    if buy_count >= 3 or sell_count >= 3:
+        return 1.0
+    elif buy_count >= 2 or sell_count >= 2:
+        return 0.7
+    else:
+        return 0.3
 
 
 # ─── H-9: エンジンシグナル構築（全指標統合） ────────────────────
@@ -907,12 +935,14 @@ def _build_engine_signals(sym: str, tf_results: dict, df_store: dict) -> dict:
         _signals["corr_caution"]     = ""
         print(f"[CorrelationFilter] {sym}: {_corr_err}")
 
-    # A-3: コードベース Liquidity Sweep 検出
+    # A-3: コードベース Liquidity Sweep 検出 (TASK 5: 直近ウィンドウのみ使用)
     try:
         from ono_estimator.filters.liquidity_sweep import detect_liquidity_sweep as _dls
-        # 1-1: DataFrame の or チェーンは ambiguous エラーになるため explicit に
-        _ls_df = df_store.get("5m") if df_store.get("5m") is not None else (
-                 df_store.get("1m") if df_store.get("1m") is not None else df1h)
+        _ls_df_raw = df_store.get("5m") if df_store.get("5m") is not None else (
+                     df_store.get("1m") if df_store.get("1m") is not None else df1h)
+        # TASK 5: primary_bars本に制限してSV検出（長期データで薄まる問題を解消）
+        _sv_bars = _pips_config.get("primary", {}).get("bars", 48)
+        _ls_df = _ls_df_raw.tail(_sv_bars) if _ls_df_raw is not None else None
         if _ls_df is not None and len(_ls_df) >= 22:
             _ls = _dls(_ls_df)
             _signals["ls_detected"]  = _ls["detected"]
@@ -981,12 +1011,37 @@ def _build_engine_signals(sym: str, tf_results: dict, df_store: dict) -> dict:
 
 
 # ─── コア分析（blocking） ───────────────────────────────────────
-def _analyze_symbol_blocking(sym: str) -> dict:
+def _analyze_symbol_blocking(sym: str, target_pips: int = None) -> dict:
+    if target_pips is None:
+        target_pips = DEFAULT_TARGET_PIPS
+    w_cfg    = _pips_config if not target_pips or target_pips == DEFAULT_TARGET_PIPS else (
+        get_window_config(target_pips) if _HAS_PIPS_CONFIG else _pips_config
+    )
+    primary_tf  = w_cfg["primary"]["tf"]
+    primary_bars = w_cfg["primary"]["bars"]
+    confirm_tf  = w_cfg["confirm"]["tf"]
+    confirm_bars = w_cfg["confirm"]["bars"]
+    context_tf  = w_cfg["context"]["tf"]
+    context_bars = w_cfg["context"]["bars"]
+
     results  = {}
-    df_store = {}   # H-7: DFを保持してengine_signals構築に使う
+    df_store = {}
+    # 3層方向を収集（TASK 6 用）
+    _layer_dirs = {"primary": "WAIT", "confirm": "WAIT", "context": "WAIT"}
+
     for tf in TIMEFRAMES:
         try:
-            df = fetcher.get_analysis_df(sym, tf)
+            # TASK 2: TFごとにウィンドウを適用してDFを取得
+            if tf == primary_tf:
+                df = fetcher.get_analysis_df_windowed(sym, tf, primary_bars)
+            elif tf == confirm_tf:
+                df = fetcher.get_analysis_df_windowed(sym, tf, confirm_bars)
+            elif tf == context_tf:
+                df = fetcher.get_analysis_df_windowed(sym, tf, context_bars)
+            else:
+                df = fetcher.get_analysis_df(sym, tf)
+                if df is not None and len(df) > 500:
+                    df = df.tail(500)
             # M-8: Supabaseキャッシュからフォールバック
             if (df is None or df.empty or len(df) < 30):
                 snap = db.get_latest_snapshot(sym, tf)
@@ -1011,11 +1066,20 @@ def _analyze_symbol_blocking(sym: str) -> dict:
                 try:
                     loop = asyncio.new_event_loop()
                     v6 = loop.run_until_complete(
-                        engine_v2.analyze(_short(sym), df)
+                        engine_v2.analyze(_short(sym), df, target_pips=target_pips)
                     )
                     loop.close()
                 except Exception as e:
                     print(f"[v6] {sym}/{tf}: {e}")
+
+            # TASK 6: 3層方向を収集
+            _v6_dir = (v6.get("direction", "WAIT") if v6 else "WAIT")
+            if tf == primary_tf:
+                _layer_dirs["primary"] = _v6_dir
+            elif tf == confirm_tf:
+                _layer_dirs["confirm"] = _v6_dir
+            elif tf == context_tf:
+                _layer_dirs["context"] = _v6_dir
 
             # セッション補正
             session = "off"
@@ -1070,6 +1134,20 @@ def _analyze_symbol_blocking(sym: str) -> dict:
             print(f"[Analyze] {sym}/{tf}: {e}")
             traceback.print_exc()
 
+    # TASK 6: 3層合意スコアを primary TF のスコアに適用
+    if results and primary_tf in results:
+        agreement = calc_agreement_score(
+            _layer_dirs["context"], _layer_dirs["confirm"], _layer_dirs["primary"]
+        )
+        if agreement < 1.0:
+            orig_score = results[primary_tf].get("score", 0)
+            results[primary_tf]["score"] = round(orig_score * agreement)
+            results[primary_tf]["agreement_multiplier"] = agreement
+            if agreement <= 0.3:
+                results[primary_tf]["warnings"] = results[primary_tf].get("warnings", []) + [
+                    "⚠️ 3層不一致 — 方向感なし。WAIT推奨"
+                ]
+
     if results:
         ref = results.get(ANALYSIS_TF) or next(iter(results.values()), {})
         price = ref.get("price", 0)
@@ -1084,7 +1162,6 @@ def _analyze_symbol_blocking(sym: str) -> dict:
         try:
             es = _build_engine_signals(sym, results, df_store)
             results["_engine_signals"] = es
-            # ai_loop が直接参照できるよう system_state にも保存
             system_state[sym]["_engine_signals"] = es
         except Exception as e:
             print(f"[EngineSignals] {sym}: {e}")

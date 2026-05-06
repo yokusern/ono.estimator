@@ -29,6 +29,15 @@ from .layer1_smc import SMCAnalyzer, SMCResult
 from .layer2_technical import TechnicalAnalyzer, TechnicalResult
 from .layer3_fundamental import FundamentalAnalyzer, FundamentalResult
 from .layer4_momentum import MomentumAnalyzer, MomentumResult
+from .support_resistance import SupportResistanceAnalyzer, SRResult
+
+try:
+    from ..pips_config import get_window_config, get_trade_style, get_pip_value, DEFAULT_TARGET_PIPS, SYMBOL_NORMALIZE
+except Exception:
+    DEFAULT_TARGET_PIPS = 20
+    def get_window_config(p=20): return {"style":"デイトレード","primary":{"tf":"5m","bars":48},"hold_minutes":60}
+    def get_trade_style(p=20): return "デイトレード"
+    def get_pip_value(s): return 0.01
 
 
 # ─── 過去統計から算出した複合確率テーブル ────────────────────
@@ -117,6 +126,23 @@ class MasterSignal:
     confidence_text: str = ""
     summary_jp: str = ""
 
+    # S/R 分析（TASK 4）
+    nearest_resistance: float = 0.0
+    nearest_support: float = 0.0
+    at_resistance: bool = False
+    at_support: bool = False
+    bounce_detected: bool = False
+    bounce_direction: str = "NONE"
+    break_detected: bool = False
+    break_direction: str = "NONE"
+    flip_detected: bool = False
+    flip_type: str = "NONE"
+    is_range: bool = False
+    range_high: float = 0.0
+    range_low: float = 0.0
+    sr_score: float = 0.0
+    sr_signals: List[str] = field(default_factory=list)
+
 
 class MasterFXEngine:
     """最強FX分析エンジン — 全レイヤー統合"""
@@ -134,6 +160,7 @@ class MasterFXEngine:
         self.tech_analyzer  = TechnicalAnalyzer()
         self.fund_analyzer  = FundamentalAnalyzer()
         self.mom_analyzer   = MomentumAnalyzer()
+        self.sr_analyzer    = SupportResistanceAnalyzer()
 
     def analyze(
         self,
@@ -141,12 +168,19 @@ class MasterFXEngine:
         symbol: str = "USDJPY",
         vix_estimate: float = 15.0,
         fred_data: Optional[Dict] = None,
+        target_pips: int = None,
     ) -> MasterSignal:
+        if target_pips is None:
+            target_pips = DEFAULT_TARGET_PIPS
         signal = MasterSignal(symbol=symbol)
 
         if df is None or len(df) < 30:
             signal.summary_jp = "⚠️ データ不足 — 最低30本必要"
             return signal
+
+        # pip_value を銘柄から取得して SR アナライザーに渡す
+        pip_val = get_pip_value(symbol)
+        self.sr_analyzer.pip_value = pip_val
 
         smc_result   = self.smc_analyzer.analyze(df)
         tech_result  = self.tech_analyzer.analyze(df)
@@ -154,15 +188,39 @@ class MasterFXEngine:
         mom_result   = self.mom_analyzer.analyze(df)
         corr_score   = self._calc_correlation_score(symbol, tech_result, fund_result)
 
+        # TASK 4-2: S/R 分析（スコアへのボーナス適用）
+        try:
+            sr_result = self.sr_analyzer.analyze(df)
+        except Exception:
+            sr_result = SRResult()
+
         weighted = (
             smc_result.score        * self.WEIGHTS["smc"] +
             tech_result.score       * self.WEIGHTS["technical"] +
             fund_result.score       * self.WEIGHTS["fundamental"] +
             mom_result.score        * self.WEIGHTS["momentum"] +
-            corr_score              * self.WEIGHTS["correlation"]
+            corr_score              * self.WEIGHTS["correlation"] +
+            sr_result.score         * 0.30  # S/Rスコアを30%の重みで加算
         )
 
         signal.final_score = round(max(-100, min(100, weighted)), 1)
+
+        # S/R 情報を signal にコピー
+        signal.sr_score          = sr_result.score
+        signal.sr_signals        = sr_result.signals
+        signal.nearest_resistance = sr_result.nearest_resistance.price if sr_result.nearest_resistance else 0.0
+        signal.nearest_support    = sr_result.nearest_support.price    if sr_result.nearest_support    else 0.0
+        signal.at_resistance     = sr_result.at_resistance
+        signal.at_support        = sr_result.at_support
+        signal.bounce_detected   = sr_result.bounce_detected
+        signal.bounce_direction  = sr_result.bounce_direction
+        signal.break_detected    = sr_result.break_detected
+        signal.break_direction   = sr_result.break_direction
+        signal.flip_detected     = sr_result.flip_detected
+        signal.flip_type         = sr_result.flip_type
+        signal.is_range          = sr_result.is_range
+        signal.range_high        = sr_result.range_high
+        signal.range_low         = sr_result.range_low
 
         signal.layers_aligned = self._count_aligned_layers(
             smc_result, tech_result, fund_result, mom_result, corr_score
@@ -182,7 +240,7 @@ class MasterFXEngine:
 
         all_signals = (
             smc_result.signals + tech_result.signals +
-            fund_result.signals + mom_result.signals
+            fund_result.signals + mom_result.signals + sr_result.signals
         )
         priority_signals = [s for s in all_signals if any(e in s for e in ["⭐", "⚡", "★", "💰", "🔄"])]
         other_signals    = [s for s in all_signals if s not in priority_signals]
@@ -192,7 +250,7 @@ class MasterFXEngine:
 
         signal.signal_emoji    = self._get_emoji(signal.direction)
         signal.confidence_text = self._get_confidence_text(signal.probability, signal.layers_aligned)
-        signal.gemini_context  = self._build_gemini_prompt(signal, symbol, df, fred_data)
+        signal.gemini_context  = self._build_gemini_prompt(signal, symbol, df, fred_data, target_pips=target_pips)
         signal.summary_jp      = self._build_summary(signal, symbol)
 
         return signal
@@ -322,15 +380,38 @@ class MasterFXEngine:
         else:
             return "低確信度"
 
-    def _build_gemini_prompt(self, signal, symbol, df, fred_data) -> str:
-        r = df.iloc[-1]
-        traits = SYMBOL_TRAITS.get(symbol, {})
+    def _build_gemini_prompt(self, signal, symbol, df, fred_data, target_pips: int = None) -> str:
+        if target_pips is None:
+            target_pips = DEFAULT_TARGET_PIPS
+
+        r           = df.iloc[-1]
+        traits      = SYMBOL_TRAITS.get(symbol, {})
         personality = traits.get("personality", "")
 
-        layers_text = "\n".join([
-            f"  {k}: {v:+.1f}点" for k, v in signal.layer_breakdown.items()
-        ])
-        signals_text = "\n".join([f"  - {s}" for s in signal.top_signals[:8]])
+        # pips_config からスタイル・ウィンドウ設定を取得
+        config       = get_window_config(target_pips)
+        trade_style  = config.get("style", "デイトレード")
+        hold_minutes = config.get("hold_minutes", 60)
+        primary_cfg  = config.get("primary", {})
+        window_bars  = primary_cfg.get("bars", 48)
+        primary_tf   = primary_cfg.get("tf", "5m")
+
+        # スタイルに応じた指示文
+        if hold_minutes <= 30:
+            time_instruction  = "秒〜分単位の超短期判断です。迷ったらWAITを出してください。"
+            trend_instruction = "日足・週足は完全に無視してください。"
+        elif hold_minutes <= 240:
+            time_instruction  = "数十分〜数時間の短期判断です。"
+            trend_instruction = "日足は方向の参考程度に留め、直近の値動きを優先してください。"
+        elif hold_minutes <= 2880:
+            time_instruction  = "数時間〜数日の中期判断です。"
+            trend_instruction = "日足のトレンドも考慮しつつ、直近の動きとのバランスで判断してください。"
+        else:
+            time_instruction  = "数日〜数週間の長期判断です。"
+            trend_instruction = "週足・日足のトレンドを重視し、短期ノイズに惑わされないでください。"
+
+        layers_text   = "\n".join([f"  {k}: {v:+.1f}点" for k, v in signal.layer_breakdown.items()])
+        signals_text  = "\n".join([f"  - {s}" for s in signal.top_signals[:8]])
         warnings_text = "\n".join([f"  ⚠️ {w}" for w in signal.warnings]) if signal.warnings else "  なし"
 
         fred_text = ""
@@ -339,22 +420,62 @@ class MasterFXEngine:
                 if isinstance(val, dict) and "value" in val:
                     fred_text += f"  {key}: {val['value']}\n"
 
-        return f"""あなたは世界トップクラスのFXアナリストです。以下の多層分析結果を基に、{symbol}の今後の価格方向と具体的なトレード戦略を日本語で提供してください。
+        # S/R 情報
+        sr_text = ""
+        if signal.nearest_resistance:
+            sr_text += f"- 直近レジスタンス: {signal.nearest_resistance:.5f}"
+            if signal.at_resistance:
+                sr_text += " ← 現在価格が近接中"
+            sr_text += "\n"
+        if signal.nearest_support:
+            sr_text += f"- 直近サポート: {signal.nearest_support:.5f}"
+            if signal.at_support:
+                sr_text += " ← 現在価格が近接中"
+            sr_text += "\n"
+        if signal.flip_detected:
+            sr_text += f"- レジサポ転換: {signal.flip_type}\n"
+        if signal.is_range:
+            sr_text += f"- レンジ判定: [{signal.range_low:.5f}〜{signal.range_high:.5f}]\n"
+        if signal.bounce_detected:
+            sr_text += f"- 反発検出: {signal.bounce_direction}\n"
+        if signal.break_detected:
+            sr_text += f"- ブレイク検出: {signal.break_direction}\n"
+        if not sr_text:
+            sr_text = "  (S/R情報なし)"
+
+        return f"""あなたは{trade_style}専門のFXアナリストです。
+
+【分析設定】
+- 銘柄: {symbol}
+- トレードスタイル: {trade_style}
+- ターゲット: {target_pips} pips
+- 分析ウィンドウ: 直近{window_bars}本（{primary_tf}足）のみ
+- 想定保有時間: {hold_minutes}分以内
+
+【重要指示】
+- {time_instruction}
+- {trend_instruction}
+- 以下のスコアはすべて「直近{window_bars}本」から計算されています
+- 方向感がない場合はWAITを出してください（無理にBUY/SELLを出さない）
 
 ## 銘柄特性
 {personality}
 
-## 多層分析スコア (重み付き統合: {signal.final_score:+.1f}点 / 100点)
+## 多層分析スコア（直近{window_bars}本ベース: {signal.final_score:+.1f}点）
 {layers_text}
+  S/Rボーナス: {signal.sr_score:+.1f}点
 
 ## 検出シグナル
 {signals_text}
 
-## テクニカル指標
+## テクニカル指標（直近値）
 - 現在価格: {float(r.get('close', 0)):.5f}
 - RSI(14): {float(df['rsi'].iloc[-1] if 'rsi' in df.columns else 50):.1f}
 - ATR(14): {float(df['atr'].iloc[-1] if 'atr' in df.columns else 0):.5f}
 - EMA200: {float(df['ema200'].iloc[-1] if 'ema200' in df.columns else 0):.5f}
+
+## 水平線・レジサポ情報
+{sr_text}
 
 ## ファンダメンタル
 {fred_text if fred_text else '  (FRED APIデータなし)'}
@@ -367,7 +488,8 @@ class MasterFXEngine:
 - 確率: {signal.probability}%
 - 信頼度: {signal.confidence_text} ({signal.layers_aligned}/5レイヤー一致)
 - Entry: {signal.entry_price}
-- TP1/TP2/TP3: {signal.take_profit_1} / {signal.take_profit_2} / {signal.take_profit_3}
+- TP: {signal.take_profit_1} ({target_pips}pips)
+- TP2/TP3: {signal.take_profit_2} / {signal.take_profit_3}
 - SL: {signal.stop_loss}
 - 期待RR: {signal.expected_rr}
 
@@ -376,11 +498,11 @@ class MasterFXEngine:
 {{
   "direction": "BUY|SELL|WAIT",
   "confidence": 0-100,
-  "price_target_24h": 数値,
-  "key_levels": {{"support": [価格リスト], "resistance": [価格リスト]}},
+  "price_target": 数値,
+  "key_levels": {{"support": [価格], "resistance": [価格]}},
   "narrative": "100文字以内の判断根拠（日本語）",
-  "risk_factors": ["リスク要因1", "リスク要因2"],
-  "entry_strategy": "エントリー戦略の説明"
+  "risk_factors": ["リスク要因"],
+  "entry_strategy": "エントリー戦略"
 }}"""
 
     def _build_summary(self, signal, symbol) -> str:

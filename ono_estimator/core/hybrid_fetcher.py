@@ -186,6 +186,18 @@ class HybridDataFetcher:
             return None
         return self.calculate_indicators(df.copy())
 
+    def get_analysis_df_windowed(self, symbol: str, timeframe: str, bars: int) -> Optional[pd.DataFrame]:
+        """
+        分析用: フルデータ取得 → インジケーター計算 → 末尾bars本だけ返す。
+        インジケーター計算はフルデータで行い（MA200等の精度を保つ）、
+        スコア計算用のDFだけをスライスして返す。
+        """
+        df = self.fetch_full_ohlcv(symbol, timeframe)
+        if df is None or df.empty:
+            return None
+        df_full = self.calculate_indicators(df.copy())
+        return df_full.tail(bars)
+
     # ─── インジケーター計算 ────────────────────────────────────
 
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:

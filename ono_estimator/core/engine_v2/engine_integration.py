@@ -36,8 +36,14 @@ class ONOPredictionEngineV2:
         df: pd.DataFrame,
         vix: float = 15.0,
         fred_data: Optional[Dict] = None,
+        target_pips: int = None,
     ) -> Dict:
-        result = self.master.analyze(df, symbol, vix_estimate=vix, fred_data=fred_data)
+        result = self.master.analyze(
+            df, symbol,
+            vix_estimate=vix,
+            fred_data=fred_data,
+            target_pips=target_pips,
+        )
 
         return {
             "symbol":        symbol,
@@ -66,6 +72,15 @@ class ONOPredictionEngineV2:
 
             "gemini_prompt": result.gemini_context,
             "gemini_system": GEMINI_SYSTEM_PROMPT,
+
+            # S/R 情報
+            "nearest_resistance": result.nearest_resistance,
+            "nearest_support":    result.nearest_support,
+            "sr_score":           result.sr_score,
+            "sr_signals":         result.sr_signals,
+            "flip_detected":      result.flip_detected,
+            "bounce_detected":    result.bounce_detected,
+            "break_detected":     result.break_detected,
         }
 
     def parse_gemini_response(self, gemini_text: str, fallback_signal: Dict) -> Dict:
