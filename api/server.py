@@ -1049,15 +1049,27 @@ def _analyze_symbol_blocking(sym: str, target_pips: int = None) -> dict:
     # 3層方向を収集（TASK 6 用）
     _layer_dirs = {"primary": "WAIT", "confirm": "WAIT", "context": "WAIT"}
 
+    # 直近重視は維持しつつ、各レイヤー計算に必要な最小本数を確保
+    # （短すぎると 5m / 15m のスコアが 0 固定になりやすい）
+    tf_min_recent_bars = {
+        "1m": 72,
+        "5m": 64,
+        "15m": 60,
+        "30m": 60,
+        "1h": 60,
+        "4h": 60,
+    }
+
     for tf in TIMEFRAMES:
         try:
+            min_analysis_bars = tf_min_recent_bars.get(tf, 60)
             # TASK 2: TFごとにウィンドウを適用してDFを取得
             if tf == primary_tf:
-                df = fetcher.get_analysis_df_windowed(sym, tf, primary_bars)
+                df = fetcher.get_analysis_df_windowed(sym, tf, max(primary_bars, min_analysis_bars))
             elif tf == confirm_tf:
-                df = fetcher.get_analysis_df_windowed(sym, tf, confirm_bars)
+                df = fetcher.get_analysis_df_windowed(sym, tf, max(confirm_bars, min_analysis_bars))
             elif tf == context_tf:
-                df = fetcher.get_analysis_df_windowed(sym, tf, context_bars)
+                df = fetcher.get_analysis_df_windowed(sym, tf, max(context_bars, min_analysis_bars))
             else:
                 df = fetcher.get_analysis_df(sym, tf)
                 if df is not None and len(df) > 500:
@@ -1082,7 +1094,7 @@ def _analyze_symbol_blocking(sym: str, target_pips: int = None) -> dict:
             bars = len(df)
 
             v6 = {}
-            if engine_v2 and bars >= 50:
+            if engine_v2 and bars >= 30:
                 try:
                     loop = asyncio.new_event_loop()
                     v6 = loop.run_until_complete(
