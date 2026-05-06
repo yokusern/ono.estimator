@@ -86,7 +86,7 @@ class Notifier:
         # H-9: バッジ選択
         if signal_quality == "HIGH" and probability >= 75:
             badge = "🟢 HIGH QUALITY SIGNAL"
-        elif signal_quality == "MEDIUM" or probability >= 65:
+        elif signal_quality == "MEDIUM" or probability >= 55:
             badge = "🟡 MEDIUM QUALITY SIGNAL"
         elif should_notify:
             badge = "🔵 AI JUDGMENT CALL"

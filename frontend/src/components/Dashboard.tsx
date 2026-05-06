@@ -1850,7 +1850,7 @@ export default function Dashboard() {
               }}>
                 <div style={{ fontSize: 14, fontWeight: 700, color: "#94a3b8", marginBottom: 16 }}>📊 スコア帯別分析</div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 10, marginBottom: 16 }}>
-                  {(analyticsRaw.score_bands || []).map((band: any) => {
+                  {(Array.isArray(analyticsRaw?.score_bands) ? analyticsRaw.score_bands : []).map((band: any) => {
                     const wr2 = band.win_rate ?? 0;
                     const col = wr2 >= 60 ? "#22d3ee" : wr2 >= 50 ? "#f59e0b" : "#fb7185";
                     return (
@@ -1865,11 +1865,11 @@ export default function Dashboard() {
                     );
                   })}
                 </div>
-                {analyticsRaw.by_session && (
+                {analyticsRaw?.by_session && typeof analyticsRaw.by_session === 'object' && (
                   <div>
                     <div style={{ fontSize: 12, color: "#64748b", marginBottom: 10 }}>セッション別勝率</div>
                     <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                      {Object.entries(analyticsRaw.by_session).map(([sess, data]: [string, any]) => {
+                      {Object.entries(analyticsRaw.by_session as Record<string, any>).map(([sess, data]: [string, any]) => {
                         const sWr = data?.win_rate ?? 0;
                         const sCol = sWr >= 60 ? "#22d3ee" : sWr >= 50 ? "#f59e0b" : "#fb7185";
                         const sessLabel: Record<string,string> = { tokyo: "東京", london: "ロンドン", ny: "NY", off: "閑散" };

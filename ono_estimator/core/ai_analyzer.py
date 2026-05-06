@@ -480,7 +480,7 @@ class GeminiAnalyzer:
                 "  根拠①: 200MAに対する価格位置が明確（price_vs_ma200 が ABOVE/BELOW のいずれか）",
                 "  根拠②: Liquidity Sweep / BODY_BREAK / WICK_DENIAL のいずれかが検出済み",
                 "  根拠③: RSI・MACD・ストキャスのうち2つ以上が同じ方向を示している",
-                "confidence=HIGH かつ probability>=65 の場合も should_notify: true を必ず出力すること。",
+                "confidence=HIGH かつ probability>=55 の場合も should_notify: true を必ず出力すること。",
                 "保守的にfalseを出力することは禁止。3根拠が揃えば積極的にtrueにすること。",
                 "",
                 "should_enter_demo: 3根拠以上揃い高確度ならtrue、見送りならfalse。",

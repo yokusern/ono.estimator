@@ -1295,7 +1295,7 @@ async def ai_loop():
 
                 # A-2 / A-5: HIGH confidence または entry_timing==NOW なら強制通知
                 entry_timing = ai_data.get("entry_timing", {}) or {}
-                if confidence_level == "HIGH" and prob >= 65:
+                if confidence_level == "HIGH" and prob >= 55:
                     should_notify = True
                     ai_data["should_notify"] = True
                 if AGGRESSIVE_MODE and entry_timing.get("timing") == "NOW":
@@ -1310,7 +1310,7 @@ async def ai_loop():
                     should_send = (
                         should_notify
                         or score >= notify_threshold
-                        or prob >= 60
+                        or prob >= 55
                         or confidence_level == "HIGH"
                         or (ref_state.get("aligned", 0) >= 3 and abs(score) >= 30)
                     )
@@ -1318,7 +1318,7 @@ async def ai_loop():
                     should_send = (
                         should_notify
                         or score >= notify_threshold
-                        or prob >= 65
+                        or prob >= 55
                         or confidence_level == "HIGH"
                     )
 
@@ -2550,15 +2550,21 @@ def analytics():
         avg_loss_pips = perf.get("avg_loss_pips", 8)
         expected_value = round(wr * avg_win_pips - (1 - wr) * avg_loss_pips, 2)
 
+        score_bands_list = [
+            {"band": band, **data}
+            for band, data in score_bands.items()
+            if data
+        ]
+
         return {
             "summary": perf,
             "by_symbol": by_sym,
-            "score_bands": score_bands,
+            "score_bands": score_bands_list,
             "expected_value": expected_value,
             "ts": int(time.time()),
         }
     except Exception as e:
-        return {"error": str(e)}
+        return {"score_bands": [], "by_session": {}, "error": str(e)}
 
 
 # ─── A-7: 保有ポジション継続判断 ────────────────────────────────
