@@ -1297,7 +1297,7 @@ async def ai_loop():
                 es_for_update = system_state[sym].get("_engine_signals") or engine_signals
                 ai_data.setdefault("trade_style",  es_for_update.get("trade_style", {}))
                 ai_data.setdefault("entry_timing", es_for_update.get("entry_timing", {}))
-                ai_data["score"] = score  # notifier に渡すため
+                ai_data["score"] = ref_score  # notifier に渡すため
 
                 # 3-5: system_state 更新（全TF）— ロックで排他制御
                 async with system_state_lock:

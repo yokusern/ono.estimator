@@ -235,7 +235,7 @@ class MasterFXEngine:
         }
 
         signal.direction = self._determine_direction(signal.final_score, signal.layers_aligned)
-        self._calc_tpsl(df, signal)
+        self._calc_tpsl(df, signal, symbol, target_pips)
         signal.probability = self._calc_probability(signal)
 
         all_signals = (
@@ -303,26 +303,36 @@ class MasterFXEngine:
         else:
             return "WAIT"
 
-    def _calc_tpsl(self, df: pd.DataFrame, signal: MasterSignal):
+    def _calc_tpsl(self, df: pd.DataFrame, signal: MasterSignal, symbol: str, target_pips: int):
         close = float(df["close"].iloc[-1])
         atr   = float(df["atr"].iloc[-1]) if "atr" in df.columns else close * 0.005
 
         signal.entry_price = close
         signal.atr_value   = round(atr, 5)
 
+        # target_pips ベースの幅（スタイル連動）を優先しつつ、
+        # 低ボラ時の過小SLを避けるため ATR 下限を併用する
+        pip_value = max(float(get_pip_value(symbol)), 1e-8)
+        tp1_width = max(float(target_pips) * pip_value, pip_value)
+        style = get_trade_style(target_pips)
+        strong_rr = 1.8 if "スキャル" in style else 2.0
+        base_rr = 1.5 if "スキャル" in style else 1.7
+        strong_sl_floor = max(atr * 0.8, tp1_width / strong_rr)
+        base_sl_floor   = max(atr * 1.0, tp1_width / base_rr)
+
         if signal.direction in ["BUY", "STRONG_BUY"]:
-            sl_mult = 1.5 if signal.direction == "STRONG_BUY" else 2.0
-            signal.stop_loss     = round(close - atr * sl_mult, 5)
-            signal.take_profit_1 = round(close + atr * sl_mult * 1.5, 5)
-            signal.take_profit_2 = round(close + atr * sl_mult * 3.0, 5)
-            signal.take_profit_3 = round(close + atr * sl_mult * 5.0, 5)
+            sl_width = strong_sl_floor if signal.direction == "STRONG_BUY" else base_sl_floor
+            signal.stop_loss     = round(close - sl_width, 5)
+            signal.take_profit_1 = round(close + tp1_width, 5)
+            signal.take_profit_2 = round(close + tp1_width * 2.0, 5)
+            signal.take_profit_3 = round(close + tp1_width * 3.0, 5)
 
         elif signal.direction in ["SELL", "STRONG_SELL"]:
-            sl_mult = 1.5 if signal.direction == "STRONG_SELL" else 2.0
-            signal.stop_loss     = round(close + atr * sl_mult, 5)
-            signal.take_profit_1 = round(close - atr * sl_mult * 1.5, 5)
-            signal.take_profit_2 = round(close - atr * sl_mult * 3.0, 5)
-            signal.take_profit_3 = round(close - atr * sl_mult * 5.0, 5)
+            sl_width = strong_sl_floor if signal.direction == "STRONG_SELL" else base_sl_floor
+            signal.stop_loss     = round(close + sl_width, 5)
+            signal.take_profit_1 = round(close - tp1_width, 5)
+            signal.take_profit_2 = round(close - tp1_width * 2.0, 5)
+            signal.take_profit_3 = round(close - tp1_width * 3.0, 5)
 
         if signal.stop_loss and signal.take_profit_2:
             risk   = abs(close - signal.stop_loss)
