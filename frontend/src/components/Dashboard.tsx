@@ -997,6 +997,7 @@ function MissedSignalsPanel({ raw }: { raw: any }) {
 export default function Dashboard() {
   const [activeSymbol, setActiveSymbol] = useState("USDJPY");
   const [activeTF, setActiveTF] = useState("1h");
+  const [targetPips, setTargetPips] = useState(20);
   const [activeTab, setActiveTab] = useState<"main"|"multi"|"history"|"ai"|"demo"|"debug"|"forecast"|"funda">("main");
   const [margin, setMargin] = useState("1000000");
   const [lot, setLot] = useState("0.1");
@@ -1016,6 +1017,11 @@ export default function Dashboard() {
       if (savedLot) setLot(savedLot);
       const savedMargin = localStorage.getItem("ono_margin");
       if (savedMargin) setMargin(savedMargin);
+      const savedPips = localStorage.getItem("ono_target_pips");
+      if (savedPips) {
+        const parsed = parseInt(savedPips, 10);
+        if (!Number.isNaN(parsed) && parsed > 0) setTargetPips(parsed);
+      }
     }
   }, []);
 
@@ -1026,6 +1032,9 @@ export default function Dashboard() {
   useEffect(() => {
     if (typeof window !== "undefined") localStorage.setItem("ono_margin", margin);
   }, [margin]);
+  useEffect(() => {
+    if (typeof window !== "undefined") localStorage.setItem("ono_target_pips", String(targetPips));
+  }, [targetPips]);
 
   useEffect(() => {
     const t = setInterval(() => setSession(getCurrentSession()), 60000);
@@ -1038,8 +1047,12 @@ export default function Dashboard() {
   };
 
   const { data, error, isLoading, mutate } = useSWR(
-    `${API_URL}/api/predict?tf=${activeTF}`, fetcher,
+    `${API_URL}/api/predict?tf=${activeTF}&target_pips=${targetPips}`, fetcher,
     { ...swrOpts, refreshInterval: 20000 }
+  );
+  const { data: targetPipsRaw } = useSWR(
+    `${API_URL}/api/config/target_pips`, fetcher,
+    { revalidateOnFocus: false, refreshInterval: 120000 }
   );
   const { data: chartRaw } = useSWR(
     `${API_URL}/api/chart/${activeSymbol}?tf=${activeTF}`, fetcher,
@@ -1119,6 +1132,21 @@ export default function Dashboard() {
     activeTab === "history" ? `${API_URL}/api/analytics` : null, fetcher,
     { ...swrOpts, refreshInterval: 300000 }
   );
+
+  useEffect(() => {
+    const serverPips = Number(targetPipsRaw?.target_pips);
+    if (Number.isFinite(serverPips) && serverPips > 0 && targetPips === 20) {
+      setTargetPips(serverPips);
+    }
+  }, [targetPipsRaw?.target_pips, targetPips]);
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      fetch(`${API_URL}/api/config/target_pips?target_pips=${targetPips}`, { method: "POST" }).catch(() => {});
+      mutate();
+    }, 400);
+    return () => clearTimeout(t);
+  }, [targetPips, mutate]);
 
   const isConnected = !error && !isLoading;
   // Render が停止している場合は Supabase キャッシュを使用
@@ -1439,6 +1467,45 @@ export default function Dashboard() {
                     ))}
                   </div>
                 )}
+              </div>
+
+              <div style={{
+                background: "rgba(34,211,238,0.08)",
+                border: "1px solid rgba(34,211,238,0.25)",
+                borderRadius: 16,
+                padding: isMobile ? "12px" : "14px 16px",
+              }}>
+                <div style={{ fontSize: 11, color: "#67e8f9", letterSpacing: 1, marginBottom: 8, textTransform: "uppercase", fontWeight: 700 }}>
+                  目標 pips
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <input
+                    type="number"
+                    min={1}
+                    max={1000}
+                    value={targetPips}
+                    onChange={(e) => {
+                      const v = parseInt(e.target.value || "0", 10);
+                      if (Number.isNaN(v)) return;
+                      setTargetPips(Math.max(1, Math.min(1000, v)));
+                    }}
+                    style={{
+                      width: 110,
+                      background: "rgba(2,6,23,0.6)",
+                      border: "1px solid rgba(103,232,249,0.35)",
+                      borderRadius: 10,
+                      padding: "10px 12px",
+                      color: "#e0f2fe",
+                      fontSize: 22,
+                      fontWeight: 800,
+                      fontFamily: "monospace",
+                    }}
+                  />
+                  <span style={{ fontSize: 16, color: "#67e8f9", fontWeight: 700 }}>pips</span>
+                </div>
+                <div style={{ marginTop: 8, fontSize: 11, color: "#94a3b8" }}>
+                  現在の目標: <span style={{ color: "#67e8f9", fontWeight: 800, fontSize: 14 }}>{targetPips}</span> pips
+                </div>
               </div>
             </div>
 

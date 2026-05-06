@@ -127,6 +127,26 @@ except Exception as _pe:
     DEFAULT_TARGET_PIPS = 20
     _pips_config = {"primary": {"tf": "5m", "bars": 48}, "confirm": {"tf": "15m", "bars": 8}, "context": {"tf": "1h", "bars": 6}, "hold_minutes": 60}
     print(f"[PipsConfig] fallback: {_pe}")
+
+CURRENT_TARGET_PIPS = DEFAULT_TARGET_PIPS
+
+def _set_target_pips(pips: Optional[int]) -> int:
+    global CURRENT_TARGET_PIPS, _pips_config
+    if pips is None:
+        return CURRENT_TARGET_PIPS
+    try:
+        value = int(pips)
+    except Exception:
+        return CURRENT_TARGET_PIPS
+    if value <= 0:
+        return CURRENT_TARGET_PIPS
+    CURRENT_TARGET_PIPS = value
+    if _HAS_PIPS_CONFIG:
+        try:
+            _pips_config = get_window_config(value)
+        except Exception:
+            pass
+    return CURRENT_TARGET_PIPS
 if RENDER_URL and not RENDER_URL.startswith("http"):
     RENDER_URL = f"https://{RENDER_URL}"
 
@@ -1205,7 +1225,7 @@ async def fast_loop():
             loop = asyncio.get_event_loop()
             for sym in SYMBOLS:
                 try:
-                    tf_results = await loop.run_in_executor(None, _analyze_symbol_blocking, sym)
+                    tf_results = await loop.run_in_executor(None, _analyze_symbol_blocking, sym, CURRENT_TARGET_PIPS)
                     if not tf_results:
                         continue
                     async with system_state_lock:
@@ -1817,15 +1837,42 @@ def status():
 
 
 @app.get("/api/predict")
-def get_prediction(tf: str = Query("1h", pattern="^(1m|5m|15m|30m|1h|4h)$")):
+def get_prediction(
+    tf: str = Query("1h", pattern="^(1m|5m|15m|30m|1h|4h)$"),
+    target_pips: int = Query(None, ge=1, le=1000),
+):
+    applied_target = _set_target_pips(target_pips)
     # フロントは短縮銘柄キー（USDJPY, GOLD…）で参照する。内部は Yahoo ティッカーで保持。
     tf_state = {_short(sym): states.get(tf) for sym, states in system_state.items()}
     return {
         "data": tf_state,
         "overview": market_overview,
         "current_tf": tf,
+        "target_pips": applied_target,
+        "trade_style": get_trade_style(applied_target) if _HAS_PIPS_CONFIG else "デイトレード",
         "server_time": int(time.time()),
         "engine_version": "6.1" if _V2 else "5.0",
+    }
+
+
+@app.get("/api/config/target_pips")
+def get_target_pips():
+    p = CURRENT_TARGET_PIPS
+    return {
+        "target_pips": p,
+        "trade_style": get_trade_style(p) if _HAS_PIPS_CONFIG else "デイトレード",
+        "window_config": _pips_config,
+    }
+
+
+@app.post("/api/config/target_pips")
+def set_target_pips(target_pips: int = Query(..., ge=1, le=1000)):
+    p = _set_target_pips(target_pips)
+    return {
+        "ok": True,
+        "target_pips": p,
+        "trade_style": get_trade_style(p) if _HAS_PIPS_CONFIG else "デイトレード",
+        "window_config": _pips_config,
     }
 
 
