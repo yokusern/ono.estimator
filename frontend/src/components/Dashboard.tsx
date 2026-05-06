@@ -570,6 +570,265 @@ function NotificationPreview({ symbol, d }: { symbol: string; d: any }) {
   );
 }
 
+// ─── A-8: 時間帯リスクバー ────────────────────────────────────
+function TimeRiskBar() {
+  const [warnings, setWarnings] = useState<{ text: string; level: "warn" | "danger" }[]>([]);
+  useEffect(() => {
+    const calc = () => {
+      const now = new Date();
+      const jstH = (now.getUTCHours() + 9) % 24;
+      const jstM = now.getUTCMinutes();
+      const dow  = new Date(now.getTime() + 9*3600*1000).getUTCDay();
+      const ws: { text: string; level: "warn" | "danger" }[] = [];
+      if (jstH >= 0 && jstH < 6) ws.push({ text: "🌙 深夜〜早朝帯（薄商い・スプレッド拡大注意。判断力も低下しやすい）", level: "warn" });
+      if (dow === 1 && jstH < 9) ws.push({ text: "📅 月曜朝（週初流動性に注意。窓開けあり）", level: "warn" });
+      if (dow === 5 && jstH >= 20) ws.push({ text: "📅 金曜夕方〜深夜（週末ポジション整理・突発的なギャップリスク）", level: "danger" });
+      if (dow === 6 || dow === 0) ws.push({ text: "⛔ 週末（流動性極端に低い。エントリー不可）", level: "danger" });
+      // セッション切り替わり ±15min
+      const tokyoEndJST  = 15 * 60;       // 15:00
+      const londonStartJST = 16 * 60;     // 16:00
+      const nyStartJST = 22 * 60;         // 22:00
+      const curMins = jstH * 60 + jstM;
+      if (Math.abs(curMins - tokyoEndJST)  < 15) ws.push({ text: "🔄 東京クローズ前後（スプレッド拡大注意）", level: "warn" });
+      if (Math.abs(curMins - londonStartJST) < 15) ws.push({ text: "🔄 ロンドンオープン前後（急激な値動きに注意）", level: "warn" });
+      if (Math.abs(curMins - nyStartJST) < 15) ws.push({ text: "🔄 NYオープン前後（スプレッド拡大・急騰急落注意）", level: "warn" });
+      setWarnings(ws);
+    };
+    calc();
+    const t = setInterval(calc, 60000);
+    return () => clearInterval(t);
+  }, []);
+  if (warnings.length === 0) return null;
+  return (
+    <>
+      {warnings.map((w, i) => (
+        <div key={i} style={{
+          background: w.level === "danger" ? "rgba(239,68,68,0.15)" : "rgba(245,158,11,0.10)",
+          borderBottom: `1px solid ${w.level === "danger" ? "rgba(239,68,68,0.3)" : "rgba(245,158,11,0.22)"}`,
+          padding: "8px 24px", fontSize: 12, fontWeight: 600,
+          color: w.level === "danger" ? "#ef4444" : "#f59e0b",
+        }}>
+          {w.text}
+        </div>
+      ))}
+    </>
+  );
+}
+
+// ─── A-4: 価格予測パネル ──────────────────────────────────────
+function PricePredictionPanel({ current, symbol, tradeStyle }: { current: any; symbol: string; tradeStyle: any }) {
+  const entry = current?.entry;
+  const tp1   = current?.tp1 || current?.tp;
+  const tp2   = current?.tp2;
+  const sl    = current?.sl;
+  const dir   = (current?.status || current?.direction || "WAIT").toUpperCase();
+  if (!entry || (!tp1 && !sl)) return null;
+  const isBuy  = dir.includes("BUY");
+  const col    = isBuy ? "#22c55e" : "#ef4444";
+  const isJpy  = symbol.includes("JPY") || symbol === "GOLD" || symbol === "JP225";
+  const mult   = isJpy ? 100 : 10000;
+  const fmt    = (v: number) => v.toFixed(entry > 100 ? 2 : entry > 10 ? 3 : 5);
+  const pipDist = (a: number, b: number) => Math.abs(a - b) * mult;
+  const tp1p = tp1 ? pipDist(tp1, entry) : 0;
+  const tp2p = tp2 ? pipDist(tp2, entry) : 0;
+  const slp  = sl  ? pipDist(sl, entry)  : 0;
+  const holdTime = tradeStyle?.hold_time || "---";
+  return (
+    <div style={{
+      background: "rgba(255,255,255,0.02)", border: `1px solid ${col}22`,
+      borderRadius: 14, padding: 16,
+    }}>
+      <div style={{ fontSize: 11, color: "#64748b", letterSpacing: 1, marginBottom: 12 }}>🎯 価格予測 / 目標設定</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 10 }}>
+        {tp1 && (
+          <div style={{ background: "rgba(34,197,94,0.08)", borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
+            <div style={{ fontSize: 10, color: "#64748b", marginBottom: 3 }}>TP1（保守）</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#22c55e", fontFamily: "monospace" }}>{fmt(tp1)}</div>
+            <div style={{ fontSize: 10, color: "#4ade80" }}>+{tp1p.toFixed(1)} pips</div>
+          </div>
+        )}
+        {tp2 && (
+          <div style={{ background: "rgba(34,211,238,0.08)", borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
+            <div style={{ fontSize: 10, color: "#64748b", marginBottom: 3 }}>TP2（メイン）</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#22d3ee", fontFamily: "monospace" }}>{fmt(tp2)}</div>
+            <div style={{ fontSize: 10, color: "#67e8f9" }}>+{tp2p.toFixed(1)} pips</div>
+          </div>
+        )}
+        {sl && (
+          <div style={{ background: "rgba(239,68,68,0.08)", borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
+            <div style={{ fontSize: 10, color: "#64748b", marginBottom: 3 }}>SL</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#ef4444", fontFamily: "monospace" }}>{fmt(sl)}</div>
+            <div style={{ fontSize: 10, color: "#fca5a5" }}>-{slp.toFixed(1)} pips</div>
+          </div>
+        )}
+      </div>
+      <div style={{ display: "flex", gap: 12, fontSize: 11, color: "#64748b" }}>
+        <span>⏱ 想定保有: <span style={{ color: "#e2e8f0" }}>{holdTime}</span></span>
+        {tp1p > 0 && slp > 0 && (
+          <span>RR: <span style={{ color: tp1p/slp >= 2 ? "#22d3ee" : tp1p/slp >= 1.5 ? "#f59e0b" : "#fb7185", fontWeight: 700 }}>
+            1:{(tp1p/slp).toFixed(2)}
+          </span></span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── A-7: ポジション管理パネル ────────────────────────────────
+function PositionTrackerPanel({ apiUrl, symbol }: { apiUrl: string; symbol: string }) {
+  const [posEntry, setPosEntry] = useState("");
+  const [posDir, setPosDir]     = useState<"BUY"|"SELL">("BUY");
+  const [posLot, setPosLot]     = useState("0.1");
+  const [result, setResult]     = useState<any>(null);
+  const [loading, setLoading]   = useState(false);
+
+  const check = useCallback(async () => {
+    if (!posEntry) return;
+    setLoading(true);
+    try {
+      const r = await fetch(`${apiUrl}/api/position/check`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol, direction: posDir, entry_price: parseFloat(posEntry), lot: parseFloat(posLot || "0.1") }),
+      });
+      setResult(await r.json());
+    } catch { setResult({ judgment: "HOLD", reason: "接続エラー" }); }
+    setLoading(false);
+  }, [apiUrl, symbol, posDir, posEntry, posLot]);
+
+  const jColor = result?.judgment === "EXIT_NOW" ? "#ef4444" : result?.judgment === "TAKE_PROFIT" ? "#22d3ee" : result?.judgment === "MOVE_SL" ? "#f59e0b" : "#22c55e";
+  const jEmoji = result?.judgment === "EXIT_NOW" ? "🔴" : result?.judgment === "TAKE_PROFIT" ? "🎯" : result?.judgment === "MOVE_SL" ? "↔️" : "🟢";
+
+  return (
+    <div style={{
+      background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
+      borderRadius: 16, padding: 16,
+    }}>
+      <div style={{ fontSize: 11, color: "#64748b", letterSpacing: 1, marginBottom: 12 }}>
+        📍 保有ポジション管理
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
+        <div>
+          <div style={{ fontSize: 10, color: "#64748b", marginBottom: 4 }}>エントリー価格</div>
+          <input value={posEntry} onChange={e => setPosEntry(e.target.value)}
+            placeholder="149.850" inputMode="decimal"
+            style={{ width: "100%", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, padding: "6px 10px", color: "#e2e8f0", fontSize: 13 }} />
+        </div>
+        <div>
+          <div style={{ fontSize: 10, color: "#64748b", marginBottom: 4 }}>方向 / ロット</div>
+          <div style={{ display: "flex", gap: 4 }}>
+            <select value={posDir} onChange={e => setPosDir(e.target.value as "BUY"|"SELL")}
+              style={{ flex: 1, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, padding: "6px 8px", color: "#e2e8f0", fontSize: 12 }}>
+              <option value="BUY">BUY</option>
+              <option value="SELL">SELL</option>
+            </select>
+            <input value={posLot} onChange={e => setPosLot(e.target.value)} placeholder="0.1" inputMode="decimal"
+              style={{ width: 60, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, padding: "6px 8px", color: "#e2e8f0", fontSize: 12 }} />
+          </div>
+        </div>
+      </div>
+      <button onClick={check} disabled={loading || !posEntry} style={{
+        width: "100%", background: loading ? "rgba(255,255,255,0.04)" : "rgba(34,211,238,0.12)",
+        border: "1px solid rgba(34,211,238,0.3)", borderRadius: 8, padding: "8px 0",
+        color: "#22d3ee", cursor: loading || !posEntry ? "default" : "pointer", fontSize: 12, fontWeight: 700,
+      }}>
+        {loading ? "判定中..." : "保有継続・決済を判定"}
+      </button>
+      {result && (
+        <div style={{
+          marginTop: 10, padding: "10px 14px",
+          background: `${jColor}12`, border: `1px solid ${jColor}33`,
+          borderRadius: 10,
+        }}>
+          <div style={{ fontSize: 15, fontWeight: 800, color: jColor, marginBottom: 4 }}>
+            {jEmoji} {result.judgment}
+          </div>
+          <div style={{ fontSize: 12, color: "#94a3b8" }}>{result.reason}</div>
+          {result.pips != null && (
+            <div style={{ fontSize: 11, color: result.pips >= 0 ? "#22c55e" : "#ef4444", marginTop: 4, fontFamily: "monospace" }}>
+              現在: {result.pips >= 0 ? "+" : ""}{result.pips.toFixed(1)} pips
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── E-4: エントリー前チェックリスト ─────────────────────────
+function PreEntryChecklistModal({ onClose, symbol, direction }: { onClose: () => void; symbol: string; direction: string }) {
+  const checks = [
+    "MTF方向一致しているか？（3TF以上が同一方向）",
+    "キーレベル付近でのエントリーか確認した",
+    "直近30分以内に重要指標がないことを確認した",
+    "SLをどこに置くか明確に決定した",
+    "ロット数は資金の2%以内に収まっている",
+    "連敗中ではない（リベンジトレードではない）",
+  ];
+  const [checked, setChecked] = useState<boolean[]>(Array(checks.length).fill(false));
+  const allChecked = checked.every(Boolean);
+  const toggle = (i: number) => setChecked(prev => prev.map((v, j) => j === i ? !v : v));
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 300,
+      background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)",
+      display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
+    }}>
+      <div style={{
+        background: "#0f172a", border: "1px solid rgba(255,255,255,0.1)",
+        borderRadius: 20, padding: 28, maxWidth: 480, width: "100%",
+        boxShadow: "0 20px 60px rgba(0,0,0,0.5)",
+      }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 800, color: "#f1f5f9" }}>エントリー前チェックリスト</div>
+            <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>{symbol} — {direction.replace("STRONG_","")}</div>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#64748b", cursor: "pointer", fontSize: 20 }}>✕</button>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+          {checks.map((c, i) => (
+            <label key={i} style={{
+              display: "flex", alignItems: "center", gap: 12, cursor: "pointer",
+              padding: "10px 14px", borderRadius: 10,
+              background: checked[i] ? "rgba(34,197,94,0.08)" : "rgba(255,255,255,0.03)",
+              border: `1px solid ${checked[i] ? "rgba(34,197,94,0.3)" : "rgba(255,255,255,0.06)"}`,
+              transition: "all 0.2s",
+            }}>
+              <div style={{
+                width: 22, height: 22, borderRadius: 6, flexShrink: 0,
+                background: checked[i] ? "#22c55e" : "rgba(255,255,255,0.06)",
+                border: `2px solid ${checked[i] ? "#22c55e" : "rgba(255,255,255,0.15)"}`,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                transition: "all 0.2s",
+              }}>
+                {checked[i] && <span style={{ color: "#000", fontSize: 14, fontWeight: 900 }}>✓</span>}
+              </div>
+              <input type="checkbox" checked={checked[i]} onChange={() => toggle(i)} style={{ display: "none" }} />
+              <span style={{ fontSize: 13, color: checked[i] ? "#86efac" : "#94a3b8", lineHeight: 1.4 }}>{c}</span>
+            </label>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={onClose} style={{
+            flex: 1, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)",
+            borderRadius: 10, padding: "12px 0", color: "#64748b", cursor: "pointer", fontSize: 13,
+          }}>キャンセル</button>
+          <button disabled={!allChecked} style={{
+            flex: 2, background: allChecked ? "rgba(34,197,94,0.2)" : "rgba(255,255,255,0.04)",
+            border: `1px solid ${allChecked ? "rgba(34,197,94,0.5)" : "rgba(255,255,255,0.08)"}`,
+            borderRadius: 10, padding: "12px 0",
+            color: allChecked ? "#22c55e" : "#374151",
+            cursor: allChecked ? "pointer" : "default",
+            fontSize: 13, fontWeight: 700, transition: "all 0.3s",
+          }}>
+            {allChecked ? "✅ 全チェック完了 — エントリー準備OK" : `あと ${checked.filter(v=>!v).length}項目`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── A-6: ランキングバー ──────────────────────────────────────
 function RankingBar({ raw, onSelect }: { raw: any; onSelect: (sym: string) => void }) {
   const items: any[] = raw?.data?.slice(0, 3) || [];
@@ -738,9 +997,11 @@ export default function Dashboard() {
   const [activeTF, setActiveTF] = useState("1h");
   const [activeTab, setActiveTab] = useState<"main"|"multi"|"history"|"ai"|"demo"|"debug">("main");
   const [margin, setMargin] = useState("1000000");
+  const [lot, setLot] = useState("0.1");
   const [session, setSession] = useState(getCurrentSession());
   const [showInfo, setShowInfo] = useState(false);
   const [showAnalysisDetail, setShowAnalysisDetail] = useState(false);
+  const [showChecklist, setShowChecklist] = useState(false);
   const { isMobile, isTablet } = useWindowSize(); // 6-8
 
   // URLパラメータ ?debug=1 でデバッグタブを有効化
@@ -748,8 +1009,21 @@ export default function Dashboard() {
     if (typeof window !== "undefined") {
       const params = new URLSearchParams(window.location.search);
       if (params.get("debug") === "1") setActiveTab("debug");
+      // A-3: localStorage から lot を復元
+      const savedLot = localStorage.getItem("ono_lot");
+      if (savedLot) setLot(savedLot);
+      const savedMargin = localStorage.getItem("ono_margin");
+      if (savedMargin) setMargin(savedMargin);
     }
   }, []);
+
+  // A-3: lot/margin を localStorage に保存
+  useEffect(() => {
+    if (typeof window !== "undefined") localStorage.setItem("ono_lot", lot);
+  }, [lot]);
+  useEffect(() => {
+    if (typeof window !== "undefined") localStorage.setItem("ono_margin", margin);
+  }, [margin]);
 
   useEffect(() => {
     const t = setInterval(() => setSession(getCurrentSession()), 60000);
@@ -1019,6 +1293,18 @@ export default function Dashboard() {
         </div>
       )}
 
+      {/* ─── A-8: 時間帯リスクバー ── */}
+      <TimeRiskBar />
+
+      {/* ─── E-4: チェックリストモーダル ── */}
+      {showChecklist && (
+        <PreEntryChecklistModal
+          onClose={() => setShowChecklist(false)}
+          symbol={SYMBOL_DISPLAY[activeSymbol] || activeSymbol}
+          direction={dir}
+        />
+      )}
+
       {/* ─── Tabs (desktop) ── */}
       {!isMobile && (
         <div style={{
@@ -1223,6 +1509,9 @@ export default function Dashboard() {
                 )}
               </div>
 
+              {/* A-4: 価格予測パネル */}
+              <PricePredictionPanel current={current} symbol={activeSymbol} tradeStyle={tradeStyle} />
+
               {/* Signals & Warnings */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
                 <div style={{
@@ -1333,47 +1622,68 @@ export default function Dashboard() {
                 <NotificationPreview symbol={activeSymbol} d={current} />
               </div>
 
+              {/* A-7: ポジション管理 */}
+              <PositionTrackerPanel apiUrl={API_URL} symbol={activeSymbol} />
+
               {/* Money manager */}
               <div style={{
                 background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
                 borderRadius: 16, padding: 16,
               }}>
-                <div style={{ fontSize: 11, color: "#64748b", letterSpacing: 1, marginBottom: 14 }}>💰 ロット計算</div>
-                <div style={{ marginBottom: 12 }}>
-                  <div style={{ fontSize: 11, color: "#64748b", marginBottom: 6 }}>証拠金 (円)</div>
-                  <input
-                    value={margin}
-                    onChange={e => setMargin(e.target.value)}
-                    inputMode="numeric"
-                    style={{
-                      width: "100%", background: "rgba(255,255,255,0.06)",
-                      border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8,
-                      padding: "8px 12px", color: "#e2e8f0", fontSize: 14,
-                    }}
-                  />
-                </div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                  <div style={{
-                    background: "rgba(255,255,255,0.04)", borderRadius: 10, padding: "10px 12px",
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+                  <div style={{ fontSize: 11, color: "#64748b", letterSpacing: 1 }}>💰 ロット計算</div>
+                  <button onClick={() => setShowChecklist(true)} style={{
+                    background: "rgba(34,197,94,0.12)", border: "1px solid rgba(34,197,94,0.3)",
+                    borderRadius: 8, padding: "4px 10px", color: "#22c55e", cursor: "pointer", fontSize: 10, fontWeight: 700,
                   }}>
+                    ✅ エントリーチェック
+                  </button>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
+                  <div>
+                    <div style={{ fontSize: 10, color: "#64748b", marginBottom: 4 }}>証拠金 (円)</div>
+                    <input value={margin} onChange={e => setMargin(e.target.value)} inputMode="numeric"
+                      style={{ width: "100%", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "7px 10px", color: "#e2e8f0", fontSize: 13 }} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 10, color: "#64748b", marginBottom: 4 }}>ロット数</div>
+                    <input value={lot} onChange={e => setLot(e.target.value)} inputMode="decimal" placeholder="0.1"
+                      style={{ width: "100%", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "7px 10px", color: "#e2e8f0", fontSize: 13 }} />
+                  </div>
+                </div>
+                {/* A-3: ロット × SL/TP リアルタイム計算 */}
+                {(() => {
+                  const lotNum = parseFloat(lot) || 0.1;
+                  const isJpySymbol = activeSymbol.includes("JPY") || activeSymbol === "GOLD" || activeSymbol === "JP225";
+                  const pipVal = isJpySymbol ? 100 : 1000; // 1lot × 1pip の円価値の概算
+                  const slLoss = Math.round(slPips * lotNum * pipVal);
+                  const tp1 = current?.tp1 || current?.tp;
+                  const tp1Pips = tp1 && current?.entry ? Math.abs(tp1 - current.entry) * (isJpySymbol ? 100 : 10000) : 0;
+                  const tp1Profit = Math.round(tp1Pips * lotNum * pipVal);
+                  const capPct = slLoss && m ? ((slLoss / m) * 100).toFixed(2) : "---";
+                  return (
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+                      <div style={{ background: "rgba(251,113,133,0.08)", borderRadius: 8, padding: "8px 10px" }}>
+                        <div style={{ fontSize: 10, color: "#64748b", marginBottom: 2 }}>SL損失 ({slPips}pips)</div>
+                        <div style={{ fontSize: 14, fontWeight: 700, color: "#fb7185" }}>-¥{slLoss.toLocaleString()}</div>
+                        <div style={{ fontSize: 10, color: "#64748b" }}>資金の{capPct}%</div>
+                      </div>
+                      <div style={{ background: "rgba(34,197,94,0.08)", borderRadius: 8, padding: "8px 10px" }}>
+                        <div style={{ fontSize: 10, color: "#64748b", marginBottom: 2 }}>TP1利益 ({tp1Pips.toFixed(1)}pips)</div>
+                        <div style={{ fontSize: 14, fontWeight: 700, color: "#22c55e" }}>+¥{tp1Profit.toLocaleString()}</div>
+                        <div style={{ fontSize: 10, color: "#64748b" }}>RR: {slPips > 0 ? (tp1Pips/slPips).toFixed(2) : "---"}</div>
+                      </div>
+                    </div>
+                  );
+                })()}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <div style={{ background: "rgba(255,255,255,0.04)", borderRadius: 10, padding: "10px 12px" }}>
                     <div style={{ fontSize: 10, color: "#64748b", marginBottom: 4 }}>リスク率</div>
                     <div style={{ fontSize: 18, fontWeight: 800, color: "#22d3ee" }}>{riskPct}%</div>
                   </div>
-                  <div style={{
-                    background: "rgba(255,255,255,0.04)", borderRadius: 10, padding: "10px 12px",
-                  }}>
+                  <div style={{ background: "rgba(255,255,255,0.04)", borderRadius: 10, padding: "10px 12px" }}>
                     <div style={{ fontSize: 10, color: "#64748b", marginBottom: 4 }}>リスク額</div>
                     <div style={{ fontSize: 18, fontWeight: 800, color: "#f59e0b" }}>¥{riskAmt.toLocaleString()}</div>
-                  </div>
-                </div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8 }}>
-                  <div style={{ background: "rgba(255,255,255,0.04)", borderRadius: 10, padding: "8px 10px" }}>
-                    <div style={{ fontSize: 10, color: "#64748b", marginBottom: 2 }}>SL (推定)</div>
-                    <div style={{ fontSize: 14, fontWeight: 700, color: "#fb7185" }}>{slPips} pips</div>
-                  </div>
-                  <div style={{ background: "rgba(255,255,255,0.04)", borderRadius: 10, padding: "8px 10px" }}>
-                    <div style={{ fontSize: 10, color: "#64748b", marginBottom: 2 }}>リスク/Lot</div>
-                    <div style={{ fontSize: 14, fontWeight: 700, color: "#f59e0b" }}>¥{(slPips * 100).toLocaleString()}</div>
                   </div>
                 </div>
                 <div style={{
@@ -1381,7 +1691,7 @@ export default function Dashboard() {
                   border: "1px solid rgba(34,211,238,0.2)",
                   borderRadius: 10, padding: "10px 14px", textAlign: "center",
                 }}>
-                  <div style={{ fontSize: 11, color: "#64748b" }}>推奨ロット</div>
+                  <div style={{ fontSize: 11, color: "#64748b" }}>推奨ロット（資金{riskPct}%リスク）</div>
                   <div style={{ fontSize: 26, fontWeight: 900, color: "#22d3ee" }}>{recLot}<span style={{ fontSize: 14 }}>lot</span></div>
                 </div>
               </div>
@@ -2126,7 +2436,7 @@ export default function Dashboard() {
         display: "flex", justifyContent: "space-between", alignItems: "center",
         fontSize: 11, color: "#1e293b",
       }}>
-        <span>ONO Estimator v6.1 — 5-Layer AI Engine</span>
+        <span>ONO Estimator v7.0 — 5-Layer AI Engine + Phase A-E</span>
         <span>Powered by Gemini 2.0 Flash × SMC × Ichimoku × FRED</span>
         <span>次のセッション: {session.next}</span>
       </footer>

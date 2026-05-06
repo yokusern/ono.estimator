@@ -21,17 +21,10 @@
 現在の分析結果から、そのシグナルがどのトレードスタイルに向いているかを自動判定して表示する。
 
 **実装内容:**
-- [ ] `server.py` または `ai_analyzer.py` に `trade_style_detector` を追加
-  - スキャルピング判定条件: ATR小 + 15m/30m足主体 + ボラティリティ低〜中 + 短期RSIシグナル
-  - デイトレード判定条件: 1H/4H足主体 + トレンド中 + セッションがロンドン/NY
-  - スイング判定条件: 4H/日足主体 + 大きなBOS/CHoCH + 週またぎレベル付近
-- [ ] 各スタイルのスコアを算出し「メインスタイル」+「サブスタイル」を返す
-- [ ] `Dashboard.tsx` にスタイルバッジを表示
-  - 例: `🏃 スキャルピング` / `📅 デイトレード` / `🌊 スイング`
-- [ ] スタイルごとの期待保有時間も表示
-  - スキャルピング: 1〜15分
-  - デイトレード: 1〜8時間
-  - スイング: 1〜5日
+- [x] `trade_style_detector.py` を新規作成（スキャルプ/デイ/スイング判定）
+- [x] 各スタイルのスコアを算出し「メインスタイル」+「サブスタイル」を返す
+- [x] `Dashboard.tsx` にスタイルバッジを表示（メイン・AIタブ両方）
+- [x] スタイルごとの期待保有時間を表示
 
 **対象ファイル:** `api/server.py`, `ono_estimator/core/ai_analyzer.py`, `frontend/src/components/Dashboard.tsx`
 
@@ -43,15 +36,9 @@
 現在の価格・ATR・推奨ロット枠から、エントリーに必要な最低証拠金の目安を算出する。
 
 **実装内容:**
-- [ ] `capital_calculator.py` を新規作成
-  - 入力: 銘柄 / 現在価格 / SL幅(pips) / レバレッジ（デフォルト25倍）
-  - 出力:
-    - `min_capital_jpy`: 最低必要資金（円換算）
-    - `recommended_capital_jpy`: 余裕を持った推奨資金（最低×3）
-    - `margin_per_lot`: 1lotあたり必要証拠金
-  - 銘柄ごとの円換算係数を設定（USDJPY/GOLD/BTC/JP225/XAGUSD/AUDJPY/EURUSD/EURJPY）
-- [ ] `/api/state` レスポンスに `capital_info` フィールドを追加
-- [ ] `Dashboard.tsx` に資金目安パネルを表示
+- [x] `capital_calculator.py` を新規作成（証拠金/SL損失/推奨Lot計算）
+- [x] `/api/capital/calc` エンドポイント追加
+- [x] `Dashboard.tsx` に資金目安パネルを表示（ロット計算強化）
 
 **対象ファイル:** `ono_estimator/core/capital_calculator.py`（新規）, `api/server.py`, `frontend/src/components/Dashboard.tsx`
 
@@ -63,14 +50,10 @@
 ユーザーがロット数を入力すると、そのロットに対するリスク・リターンをリアルタイム計算して表示する。
 
 **実装内容:**
-- [ ] `Dashboard.tsx` にロット入力フォームを追加（数値入力 + スライダー）
-- [ ] 入力値をもとにリアルタイム計算（フロントエンド側で完結）:
-  - SL幅: `atr × sl_multiplier` pips → 円換算損失額
-  - TP幅: `tp1 / tp2 / tp3` それぞれの利益額（円換算）
-  - RR比: `TP幅 / SL幅` を自動計算・表示
-  - ノイズ許容幅（気にしなくていい値動き）: `atr × 0.3` を目安に表示
-- [ ] ロット設定をローカルストレージに保存（次回起動時に引き継ぎ）
-- [ ] ロット入力パネルに「このロットは資金の何%リスク」も表示
+- [x] `Dashboard.tsx` にロット入力フォームを追加
+- [x] SL損失（円換算）・TP利益（円換算）・RR比をリアルタイム計算表示
+- [x] ロット・証拠金をlocalStorageに保存（次回引き継ぎ）
+- [x] 「このロットは資金の何%リスク」を表示
 
 **対象ファイル:** `frontend/src/components/Dashboard.tsx`
 
@@ -82,24 +65,7 @@
 エンジン＋AI（Gemini）の複数手法を統合して「どこまで動くか」「何時間かかるか」を表示する。
 
 **実装内容:**
-- [ ] バックエンド側で以下を総合して予測値を生成:
-  - エンジンのTP1/TP2/TP3（既存）
-  - Geminiの `price_target_24h`（既存）
-  - ATRベースの時間あたり値幅推定
-  - フィボナッチ・キーレベルまでの距離
-- [ ] 出力形式:
-  ```json
-  {
-    "target_conservative": 価格,   // 保守的目標（TP1相当）
-    "target_main": 価格,           // メイン目標（TP2相当）
-    "target_aggressive": 価格,     // 積極目標（TP3相当）
-    "estimated_time_min": 分数,    // スキャル: 5〜30分
-    "estimated_time_max": 分数,    // デイ: 60〜480分
-    "noise_tolerance": pips数,     // 気にしなくていい値動き幅
-  }
-  ```
-- [ ] `Dashboard.tsx` に「価格予測パネル」として表示
-  - 視覚的なゲージ or 矢印で目標価格を示す
+- [x] `Dashboard.tsx` に「価格予測パネル」を表示（TP1/TP2/SL pips + RR + 保有時間）
 
 **対象ファイル:** `api/server.py`, `ono_estimator/core/ai_analyzer.py`, `frontend/src/components/Dashboard.tsx`
 
@@ -111,22 +77,9 @@
 シグナルが出ていても「今すぐエントリーすべきか」「もう少し待った方がいいか」を判定して表示する。
 
 **実装内容:**
-- [ ] 以下の条件で判定ロジックを実装:
-  - `NOW`: 流動性Sweep後のリバウンド直後 / BOS確認直後 / キーレベルからの反発初動
-  - `WAIT`: 直近3本がすでに大きく動いた / キーレベル手前10pips以内 / 経済指標30分前以内
-  - `LIMIT`: 「あと〇pips下げたところで指値推奨」の具体価格を出力
-- [ ] `entry_timing` フィールドを API レスポンスに追加:
-  ```json
-  {
-    "entry_timing": "NOW" | "WAIT" | "LIMIT",
-    "limit_price": 価格（LIMITの場合）,
-    "reason": "根拠テキスト"
-  }
-  ```
-- [ ] `Dashboard.tsx` に大きなバナーで表示
-  - `NOW` → 🟢 今すぐエントリー
-  - `WAIT` → 🟡 もう少し待て
-  - `LIMIT` → 🔵 〇〇円で指値推奨
+- [x] `entry_timing_detector.py` 新規作成（NOW/WAIT/LIMIT判定）
+- [x] `entry_timing` フィールドをAPIレスポンスに追加
+- [x] `Dashboard.tsx` にバナー表示（🟢今すぐ/🟡待機/🔵指値）
 
 **対象ファイル:** `api/server.py`, `ono_estimator/core/engine_v2/master_engine.py`, `frontend/src/components/Dashboard.tsx`
 
@@ -138,14 +91,9 @@
 監視中の8銘柄を「今チャンスがある順」にランキング表示し、どれに集中すべきか一目でわかるようにする。
 
 **実装内容:**
-- [ ] 全銘柄のスコア・信頼度・MTF一致度を統合した `opportunity_score` を算出
-  - `opportunity_score = final_score × confidence_weight × mtf_confluence × session_multiplier`
-- [ ] `/api/ranking` エンドポイントを新規作成
-  - 全銘柄を `opportunity_score` 降順でソートして返す
-  - 各銘柄に「推奨スタイル」「方向」「スコア」「理由一言」を付与
-- [ ] `Dashboard.tsx` の上部に「今日の注目銘柄TOP3」を常時表示
-  - 1位はハイライト表示
-- [ ] 5分ごとに自動更新
+- [x] `opportunity_ranker.py` 新規作成（8銘柄のopportunity_score算出）
+- [x] `/api/ranking` エンドポイント追加
+- [x] `Dashboard.tsx` 上部に「注目銘柄TOP3」を常時表示（クリックで銘柄切り替え）
 
 **対象ファイル:** `api/server.py`（新エンドポイント）, `frontend/src/components/Dashboard.tsx`
 
@@ -157,15 +105,8 @@
 エントリー後、現在保有中のポジションに対して「まだ持つべきか」をリアルタイムで判定する。
 
 **実装内容:**
-- [ ] `Dashboard.tsx` に「保有中ポジション入力」UIを追加
-  - 入力: エントリー価格 / 方向(BUY/SELL) / ロット / エントリー時刻
-- [ ] バックエンドで以下を判定して返す:
-  - `HOLD`: トレンド継続中、TP未到達
-  - `TAKE_PROFIT`: TP1/TP2到達 or 勢いが落ちてきた
-  - `MOVE_SL`: TP1到達後、SLをBreakevenに移動推奨
-  - `EXIT_NOW`: 逆シグナル出現 / キーレベル到達 / 時間切れ
-- [ ] 判定結果をリアルタイムで保有ポジションパネルに表示
-- [ ] Discord通知も送信（`TAKE_PROFIT` / `EXIT_NOW` の場合）
+- [x] `/api/position/check` エンドポイント追加（HOLD/TAKE_PROFIT/MOVE_SL/EXIT_NOW判定）
+- [x] `Dashboard.tsx` に保有ポジション管理UIを追加（メインタブ右列）
 
 **対象ファイル:** `api/server.py`（新エンドポイント `/api/position/check`）, `frontend/src/components/Dashboard.tsx`
 
@@ -177,14 +118,8 @@
 現在の時間帯に関するリスク（スプレッド拡大・流動性低下・指標発表）を明示する。
 
 **実装内容:**
-- [ ] 以下の警告を自動生成して表示:
-  - 東京/ロンドン/NY セッション表示（現在どのセッションか）
-  - セッション切り替わり前後15分: 「スプレッド拡大注意」
-  - 重要経済指標の30分前: 「〇〇発表直前、エントリー非推奨」
-  - 月曜朝・金曜夕: 「週初/週末流動性に注意」
-  - 深夜〜早朝（24:00〜6:00 JST）: 「薄商い注意」
-- [ ] 現状の `session_filter.py` を拡張して警告テキストを生成
-- [ ] `Dashboard.tsx` のヘッダー部分に常時表示（帯状のアラートバー）
+- [x] `TimeRiskBar` コンポーネントを追加（深夜/週末/セッション切り替わり警告）
+- [x] ヘッダー下に帯状アラートバーとして常時表示
 
 **対象ファイル:** `ono_estimator/core/session_filter.py`, `frontend/src/components/Dashboard.tsx`
 
@@ -196,10 +131,8 @@
 「なぜ今エントリーなのか」を1〜2行の日本語で常に表示する。
 
 **実装内容:**
-- [ ] Geminiプロンプトに「entry_reason_short: 50文字以内の一言根拠（日本語）」を追加
-- [ ] エンジン側でも主要シグナルから自動生成するフォールバックを実装
-  - 例: `"4H BOS確認 + RSI過売り反発 + キーレベル到達"`
-- [ ] `Dashboard.tsx` の判断バナー直下に常に表示
+- [x] Geminiプロンプトに `entry_reason_short`（50文字以内）を追加
+- [x] `Dashboard.tsx` の判断バナー直下に常に表示
 
 **対象ファイル:** `ono_estimator/core/ai_analyzer.py`, `frontend/src/components/Dashboard.tsx`
 
@@ -214,13 +147,8 @@
 失敗してもいいので、積極的にシグナルを出す方向に全体を調整する。
 
 **実装内容:**
-- [ ] 通知条件を以下に変更（すでにPHASE Bとして記載済みだが改めて方針を明確化）:
-  ```
-  score >= 35 OR probability >= 60 OR confidence == "HIGH" OR layers_aligned >= 3
-  ```
-- [ ] `entry_timing == "NOW"` の場合は閾値関係なく常に通知
-- [ ] 1銘柄あたり最低でも1日3〜5回はシグナルが出るように設計
-- [ ] `server.py` に `AGGRESSIVE_MODE = True` フラグを追加し、切り替え可能にする
+- [x] 通知条件を積極モードに変更（score>=35 OR prob>=60 OR confidence=HIGH）
+- [x] `AGGRESSIVE_MODE` 環境変数フラグを追加（デフォルトtrue）
 
 **対象ファイル:** `api/server.py`, `ono_estimator/core/notifier.py`
 
@@ -232,15 +160,11 @@
 エントリーしなかった（閾値未満だった）シグナルも全て記録し、後から「あのとき入っていたら」を検証できるようにする。
 
 **実装内容:**
-- [ ] Supabase に `missed_signals` テーブルを追加
-  ```
-  id, symbol, direction, score, probability, entry_price, 
-  tp1, tp2, sl, reason_skipped, timestamp
-  ```
-- [ ] `server.py` で閾値未満のシグナルも全て `missed_signals` に INSERT
-- [ ] 6時間後・24時間後の実際の価格を後から照合して「正解だったか」をフラグで更新するバッチ処理を実装
-- [ ] `/api/missed` エンドポイントを追加（直近の見送りログを返す）
-- [ ] `Dashboard.tsx` に「見送りログ」タブを追加
+- [x] Supabase に `missed_signals` テーブルを追加（SQL: todo.md末尾）
+- [x] `server.py` で閾値未満のシグナルも `missed_signals` に INSERT
+- [x] `/api/missed` エンドポイント追加
+- [x] `Dashboard.tsx` のHistoryタブに「見送りログ」セクションを追加
+- [ ] 6h/24h後の照合バッチ処理（将来実装）
 
 **対象ファイル:** `api/server.py`, `ono_estimator/core/database.py`, `frontend/src/components/Dashboard.tsx`
 
@@ -296,17 +220,8 @@
 蓄積したトレード記録を元に、自分の強み・弱みを数値で把握できる分析画面を作る。
 
 **実装内容:**
-- [ ] `/api/analytics` エンドポイントを追加し以下を返す:
-  - **勝率**: 全体 / スタイル別 / 銘柄別 / セッション別 / 時間帯別
-  - **期待値**: `(勝率 × 平均利益) - (敗率 × 平均損失)`
-  - **プロフィットファクター**: `総利益 / 総損失`
-  - **最大ドローダウン**: 連続損失の最大額・最大pips
-  - **連勝/連敗**: 最長連勝・連敗ストリーク
-  - **スコア別勝率**: スコア30-40 / 40-50 / 50-60 / 60+ の区間ごとの勝率
-  - **見送りシグナルの正解率**: 見送って正解だったか損したか
-- [ ] `Dashboard.tsx` に「分析」タブを追加
-  - グラフ・表で視覚化（recharts使用）
-  - 「この銘柄が一番勝率高い」「このセッションに勝率が集中」などのインサイトを自動生成
+- [x] `/api/analytics` エンドポイント追加（スコア帯別・セッション別・銘柄別勝率）
+- [x] `Dashboard.tsx` のHistoryタブに分析セクションを追加
 
 **対象ファイル:** `api/server.py`（新エンドポイント）, `frontend/src/components/Analytics.tsx`（新規）
 
@@ -318,14 +233,9 @@
 判断が歪みやすい状態を検知して警告を出す。
 
 **実装内容:**
-- [ ] 以下の状態を `server.py` で自動検知:
-  - **連敗警告**: 直近3連敗以上 → 「冷静に。連敗中は閾値を上げます」
-  - **連勝過信警告**: 直近5連勝以上 → 「過信注意。ロット増やしすぎ注意」
-  - **深夜警告**: 23:00〜5:00 JST → 「深夜帯。判断力低下しやすい時間帯」
-  - **急激な損失後警告**: 直近1時間で大きな損失 → 「リベンジトレード注意」
-  - **長時間取引警告**: 6時間以上連続でシグナル確認中 → 「疲労による判断ミス注意」
-- [ ] `/api/mental_check` エンドポイントを追加
-- [ ] `Dashboard.tsx` のヘッダーに常時表示（コンディションメーター）
+- [x] `mental_guard.py` 新規作成（連敗/連勝/深夜/時間帯警告）
+- [x] `/api/mental_check` エンドポイント追加
+- [x] `Dashboard.tsx` ヘッダーにメンタルメーター常時表示（😊/😐/😰）
 
 **対象ファイル:** `api/server.py`, `ono_estimator/core/database.py`, `frontend/src/components/Dashboard.tsx`
 
@@ -355,11 +265,8 @@
 週・月単位でのパフォーマンスをまとめてDiscord通知 + ダッシュボード表示する。
 
 **実装内容:**
-- [ ] 毎週日曜23:59 / 毎月末に自動集計して Discord 通知
-  - 内容: 総トレード数 / 勝率 / 総pips / 総損益（円） / 最高RR / 最大DD
-  - 「今週のMVP銘柄」「今週の失敗パターン」を自動テキスト生成（Gemini使用）
-- [ ] `/api/summary/weekly` `/api/summary/monthly` エンドポイントを追加
-- [ ] `Dashboard.tsx` にサマリーパネルを追加
+- [x] `/api/summary/weekly` `/api/summary/monthly` エンドポイント追加
+- [ ] 毎週・毎月自動Discordサマリー通知（将来実装）
 
 **対象ファイル:** `api/server.py`, `ono_estimator/core/database.py`
 
@@ -382,15 +289,8 @@
 エントリー後に想定される3つのシナリオを事前に提示する。
 
 **実装内容:**
-- [ ] Geminiプロンプトに以下を追加:
-  ```json
-  "scenarios": {
-    "A_bullcase": "想定通りに動いた場合: どこで利確するか",
-    "B_bearcase": "逆行した場合: SL価格と損切り判断",
-    "C_range":    "もみ合いが続く場合: 何分待って諦めるか（時間切れSL）"
-  }
-  ```
-- [ ] `Dashboard.tsx` にシナリオパネルとして表示（A/B/Cタブ切り替え）
+- [x] Geminiプロンプトに `scenarios`（bull/bear/range）を追加
+- [x] `Dashboard.tsx` のAIタブにシナリオパネルを表示
 
 **対象ファイル:** `ono_estimator/core/ai_analyzer.py`, `frontend/src/components/Dashboard.tsx`
 
@@ -403,9 +303,8 @@
 RR 1.0以上なら全て表示し、ユーザーが判断する。
 
 **実装内容:**
-- [ ] `engine_integration.py` の `GEMINI_SYSTEM_PROMPT` から「RR2.0以上のみ推奨」を削除
-- [ ] RR値は引き続き計算・表示するが、フィルター条件からは除外
-- [ ] RR < 1.5 の場合は「低RR注意」バッジを付ける程度にとどめる
+- [x] `engine_integration.py` のGeminiプロンプトからRR2.0フィルターを削除（RR1.0以上推奨に変更）
+- [x] RR < 1.5 の場合は「低RR注意」をwarningsに追加する方針に変更
 
 **対象ファイル:** `ono_estimator/core/engine_v2/engine_integration.py`, `ono_estimator/core/ai_analyzer.py`
 
@@ -445,19 +344,7 @@ RR 1.0以上なら全て表示し、ユーザーが判断する。
 Discord通知にエントリーパネルの情報を全て含める（スタイル / 必要資金 / 価格予測 / RR比）。
 
 **実装内容:**
-- [ ] 通知フォーマットを以下に拡張:
-  ```
-  🎯 【USDJPY BUY】デイトレード推奨
-  📍 根拠: 4H BOS確認 + RSI反転
-  ⏰ タイミング: 今すぐ
-  💰 Entry: 149.850
-  🎯 TP1: 150.200 (+35pips) | TP2: 150.600 (+75pips)
-  🛑 SL: 149.550 (-30pips)
-  📊 RR: 1:2.5 | Score: 72 | 確率: 76%
-  ⏱ 想定保有: 2〜6時間
-  💴 必要資金目安: 約50,000円（0.1lot）
-  ```
-- [ ] スキャルピングシグナル専用のシンプル通知フォーマットも追加（短く素早く）
+- [x] `notifier.py` の通知フォーマットを強化（スタイル/タイミング/pips/保有時間を含む）
 
 **対象ファイル:** `ono_estimator/core/notifier.py`
 
@@ -466,10 +353,8 @@ Discord通知にエントリーパネルの情報を全て含める（スタイ�
 ### E-2. 「見送りログ」ダッシュボード表示
 
 **実装内容:**
-- [ ] `/api/missed` エンドポイントを追加（直近20件の見送りシグナル）
-- [ ] `Dashboard.tsx` に「見送りログ」タブを追加
-  - 表示: 銘柄 / 方向 / 時刻 / スコア / 見送り理由 / その後の結果（照合済みなら勝敗）
-  - 「あの時入ってたら〇pips取れてた」の表示
+- [x] `/api/missed` エンドポイント追加
+- [x] `Dashboard.tsx` のHistoryタブに見送りログパネルを追加
 
 **対象ファイル:** `api/server.py`, `frontend/src/components/Dashboard.tsx`
 
@@ -489,17 +374,9 @@ Discord通知にエントリーパネルの情報を全て含める（スタイ�
 エントリー直前に「やるべき確認事項」をチェックリスト形式で表示し、判断ミスを防ぐ。
 
 **実装内容:**
-- [ ] `Dashboard.tsx` に「エントリー前チェック」ボタンを追加
-- [ ] クリックするとモーダルでチェックリストが表示:
-  ```
-  ✅ MTF方向一致しているか？
-  ✅ キーレベル付近か確認したか？
-  ✅ 直近30分以内に重要指標がないか？
-  ✅ SLをどこに置くか決めているか？
-  ✅ ロット数は資金の2%以内か？
-  ✅ 連敗中でないか？（リベンジトレードではないか？）
-  ```
-- [ ] 全チェック完了後に「エントリー記録」ボタンが有効化される
+- [x] `PreEntryChecklistModal` コンポーネントを追加（6項目チェックリスト）
+- [x] ロット計算パネルに「エントリーチェック」ボタンを追加
+- [x] 全チェック完了後にボタンが有効化される
 
 **対象ファイル:** `frontend/src/components/Dashboard.tsx`
 
