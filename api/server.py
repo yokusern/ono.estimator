@@ -121,7 +121,7 @@ SCAN_INTERVAL_SEC    = 300   # 5分ごと自動スキャン
 ENTRY_MIN_CONFIDENCE = {"HIGH", "MEDIUM"}
 
 # ─── ヘルス ──────────────────────────────────────────────────────
-@app.get("/api/health")
+@app.api_route("/api/health", methods=["GET", "HEAD"])
 def health():
     sigs   = _latest_signals
     active = [s for s in sigs if s.get("direction") != "WAIT"]
