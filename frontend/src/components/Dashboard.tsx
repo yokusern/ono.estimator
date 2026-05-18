@@ -177,16 +177,19 @@ export default function Dashboard() {
   const [boFilter, setBoFilter] = useState(false);
 
   const load = useCallback(async () => {
-    const [sig, mac, pos, prf] = await Promise.all([
-      fetchJson<Signal[]>("/api/signals"),
+    const [sigRes, mac, posRes, prf] = await Promise.all([
+      fetchJson<{ signals: Signal[]; scanned_at: string }>("/api/signals"),
       fetchJson<MacroData>("/api/macro"),
-      fetchJson<DemoPosition[]>("/api/demo/positions"),
+      fetchJson<{ positions: DemoPosition[] }>("/api/demo/positions"),
       fetchJson<Performance>("/api/performance"),
     ]);
-    setFetchErr(!sig && !mac);
-    if (sig) { setSignals(sig); if (sig[0]?.scanned_at) setScannedAt(sig[0].scanned_at); }
+    setFetchErr(!sigRes && !mac);
+    if (sigRes) {
+      setSignals(sigRes.signals ?? []);
+      if (sigRes.scanned_at) setScannedAt(sigRes.scanned_at);
+    }
     if (mac) setMacro(mac);
-    if (pos) setPositions(pos);
+    if (posRes) setPositions(posRes.positions ?? []);
     if (prf) setPerf(prf);
     setLoading(false);
   }, []);
