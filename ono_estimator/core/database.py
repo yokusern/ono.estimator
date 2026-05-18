@@ -303,6 +303,15 @@ class SupabaseClient:
         if not self.client:
             return None
         try:
+            # 1. entry情報を取得
+            open_res = self.client.table("demo_positions")\
+                .select("*")\
+                .eq("symbol", symbol)\
+                .eq("status", "OPEN")\
+                .limit(1).execute()
+            pos_row = open_res.data[0] if open_res.data else {}
+
+            # 2. demo_positions を CLOSED に更新
             self.client.table("demo_positions").update({
                 "close_price": close_price,
                 "result":      result,
@@ -310,6 +319,19 @@ class SupabaseClient:
                 "status":      "CLOSED",
                 "closed_at":   datetime.utcnow().isoformat(),
             }).eq("symbol", symbol).eq("status", "OPEN").execute()
+
+            # 3. performance_log にも書き込み（実績タブに反映させるため）
+            signed_pips = round(pips, 1) if result == "WIN" else -round(pips, 1)
+            self.save_performance(
+                prediction_id=str(pos_row.get("id", symbol)),
+                symbol=symbol,
+                direction=pos_row.get("direction", ""),
+                entry_price=pos_row.get("entry_price", 0),
+                exit_price=close_price,
+                outcome=result,
+                pips_result=signed_pips,
+            )
+
             return self.get_demo_win_rate()
         except Exception as e:
             logger.warning(f"[Supabase] close_demo_position error: {e}")
