@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+gunicorn
+requests
+pandas
+numpy
+python-dotenv
+google-generativeai
+supabase
+yfinance
+httpx
+tenacity
+pydantic
+Pillow

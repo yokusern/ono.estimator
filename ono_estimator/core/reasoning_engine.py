@@ -19,6 +19,8 @@ class UpperContext:
     stage: int = 0                  # 大循環ステージ 1-6
     stage_label: str = ""           # "上昇トレンド" 等
     perfect_order: str = "NONE"     # UP / DOWN / NONE
+    price_vs_ma200: str = "N/A"    # ABOVE / BELOW / N/A (1H 200MA)
+    inside_kumo: bool = False       # 一目均衡表の雲の中
     dow_reason: str = ""
     ichimoku_status: str = ""       # "三役好転" / "三役逆転" / "中立"
     granville: str = "なし"         # グランビルパターン
@@ -34,6 +36,8 @@ class ZoneContext:
     sr_nearest_resistance: float = 0.0
     reji_support_flip: bool = False  # レジサポ転換あり
     bb_state: str = "NORMAL"        # SQUEEZE / EXPANSION / NORMAL
+    volatility_low: bool = False    # BB幅60%以下 or ATR 70%以下
+    is_middle_zone: bool = False    # S/R中央50%圏内
     chart_pattern: str = "なし"
     pullback_valid: bool = False    # 上位トレンド方向の押し目/戻し圏内
     reason: str = ""
@@ -49,7 +53,14 @@ class TriggerContext:
     direction: str = "WAIT"        # BUY / SELL / WAIT
     is_band_walk: bool = False
     band_follow: str = "NONE"      # 1-3: BUY_FOLLOW / SELL_FOLLOW / NONE
+    ls_detected: bool = False      # Liquidity Sweep検出フラグ
+    ls_confirmed: bool = False     # セカンドテスト通過フラグ
+    price: float = 0.0             # 執行時の現在価格
     is_counter_trend: bool = False  # 逆張りフラグ
+    ema_alignment: str = "NONE"    # PERFECT_UP / PERFECT_DOWN / NONE
+    ema_pullback_zone: bool = False # 20EMA/75EMA付近の押し目・戻り
+    ema_divergence_pct: float = 0.0 # 20EMAとの乖離率
+    rsi_divergence_alert: bool = False # RSI Sniper ダイバージェンス警告
     strength: int = 0              # 0-100
     reason: str = ""
 
@@ -66,11 +77,10 @@ class ThinkingResult:
     confidence: str = "LOW"        # HIGH / MEDIUM / LOW
     sl_hint: float = 0.0
     tp_hint: float = 0.0
-    entry_reason: str = ""         # Geminiに渡す日本語の判断根拠
+    entry_reason: str = ""
     risk_ok: bool = True           # ギャン理論ルール通過
 
-    def to_prompt_context(self) -> str:
-        """GeminiプロンプトのContext文字列を生成"""
+    def to_summary(self) -> str:
         lines = [
             f"【上位足(4h/1h)分析】",
             f"- トレンド: {self.upper.trend} / 大循環ステージ: {self.upper.stage}({self.upper.stage_label})",
@@ -131,7 +141,18 @@ class ReasoningEngine:
     def think(self, df_store: dict, symbol: str) -> ThinkingResult:
         """
         df_store: {"1m": df, "5m": df, "15m": df, "1h": df, "4h": df}
+        データ異常・例外が発生しても ThinkingResult(WAIT) を返して処理を継続する。
         """
+        try:
+            return self._think_internal(df_store, symbol)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(
+                f"[ReasoningEngine] {symbol} 分析中に例外: {type(e).__name__}: {e}"
+            )
+            return ThinkingResult(symbol=symbol)
+
+    def _think_internal(self, df_store: dict, symbol: str) -> ThinkingResult:
         result = ThinkingResult(symbol=symbol)
 
         df_4h = df_store.get("4h")
@@ -155,6 +176,115 @@ class ReasoningEngine:
         df_trig = df_5m if (df_5m is not None and len(df_5m) >= 20) else df_1m
         if df_trig is not None and len(df_trig) >= 20:
             result.trigger = self._analyze_trigger(df_trig, result.upper.trend)
+            result.trigger.price = float(df_trig["close"].iloc[-1])
+            
+            # ── [2] EMA (20, 75, 200) の物理判定強化 ────────
+            close_vals = df_trig["close"]
+            e20 = close_vals.ewm(span=20, adjust=False).mean().iloc[-1]
+            e75 = close_vals.ewm(span=75, adjust=False).mean().iloc[-1]
+            e200 = close_vals.ewm(span=200, adjust=False).mean().iloc[-1]
+            cur_p = result.trigger.price
+            
+            # EMA Alignment — B-4: 最小乖離率0.05%を要求。1本の値動きで反転しない水準
+            _MIN_SEP = 0.0005
+            if e75 > 0 and e200 > 0:
+                if e20 > e75 * (1 + _MIN_SEP) and e75 > e200 * (1 + _MIN_SEP):
+                    result.trigger.ema_alignment = "PERFECT_UP"
+                elif e20 < e75 * (1 - _MIN_SEP) and e75 < e200 * (1 - _MIN_SEP):
+                    result.trigger.ema_alignment = "PERFECT_DOWN"
+
+            # EMA Pullback / Divergence — ゼロ除算ガード
+            if e20 > 0:
+                dist_e20 = abs(cur_p - e20) / e20
+                result.trigger.ema_divergence_pct = (cur_p - e20) / e20 * 100
+            else:
+                dist_e20 = 1.0
+                result.trigger.ema_divergence_pct = 0.0
+            if e75 > 0:
+                dist_e75 = abs(cur_p - e75) / e75
+            else:
+                dist_e75 = 1.0
+            result.trigger.ema_pullback_zone = (dist_e20 < 0.001 or dist_e75 < 0.001)
+
+            # ── [3] RSI Sniper (ダイバージェンス防衛) ────────
+            from ono_estimator.indicators.technical import TechnicalIndicators as _TI
+            rsi_s = _TI.rsi(close_vals)
+            if len(rsi_s) >= 14:
+                cur_rsi = rsi_s.iloc[-1]
+                # 価格が直近10本の最高値を更新したが、RSIが更新していない場合
+                if cur_p > close_vals.iloc[-10:-1].max() and cur_rsi < rsi_s.iloc[-10:-1].max() and cur_rsi > 70:
+                    result.trigger.rsi_divergence_alert = True
+                elif cur_p < close_vals.iloc[-10:-1].min() and cur_rsi > rsi_s.iloc[-10:-1].min() and cur_rsi < 30:
+                    result.trigger.rsi_divergence_alert = True
+
+            # ── [3] Cloud Guard (一目均衡表の雲) ───────────
+            if df_1h is not None and len(df_1h) >= 60:
+                ichi = _TI.ichimoku(df_1h["high"], df_1h["low"], df_1h["close"])
+                c_top, c_bot = ichi.get("cloud_top", 0), ichi.get("cloud_bot", 0)
+                if min(c_top, c_bot) <= cur_p <= max(c_top, c_bot):
+                    result.upper.inside_kumo = True
+
+            # [究極の絞り込み] Liquidity Sweep 検出
+            try:
+                from ono_estimator.indicators.technical import TechnicalIndicators as _TI
+                ls_res = _TI.detect_liquidity_sweep(df_trig)
+                bull_sweep   = bool(ls_res.get("bull_sweep"))
+                bear_sweep   = bool(ls_res.get("bear_sweep"))
+                bull_rebreak = bool(ls_res.get("bull_rebreak"))
+                bear_rebreak = bool(ls_res.get("bear_rebreak"))
+                result.trigger.ls_detected = bull_sweep or bear_sweep or bull_rebreak or bear_rebreak
+
+                # セカンドテスト: 再ブレイク確認 + trigger方向との一致チェック (K-6)
+                # bull_rebreak → BUY確認 / bear_rebreak → SELL確認
+                trig_dir = result.trigger.direction
+                if (bull_rebreak and trig_dir == "BUY") or (bear_rebreak and trig_dir == "SELL"):
+                    result.trigger.ls_confirmed = True
+                else:
+                    result.trigger.ls_confirmed = False
+                    if result.trigger.ls_detected:
+                        if bull_rebreak or bear_rebreak:
+                            # rebreakはあるが方向が逆
+                            result.conflict_flags.append("LS方向矛盾（rebreak方向とtrigger方向が逆）")
+                        else:
+                            # sweep検出のみ、rebreak待ち
+                            result.conflict_flags.append("LSセカンドテスト待ち")
+            except Exception:
+                pass
+
+        # ── 「鉄の掟」用フラグ算出 ──────────────────────────
+        
+        # 1. 1H 200MA位置の特定 (Step 1)
+        if df_1h is not None and len(df_1h) >= 200:
+            try:
+                ma200 = df_1h["close"].rolling(200).mean().iloc[-1]
+                price = float(df_1h["close"].iloc[-1])
+                if ma200 > 0 and not pd.isna(ma200):
+                    result.upper.price_vs_ma200 = "ABOVE" if price > ma200 else "BELOW"
+            except Exception:
+                pass
+
+        # 2. ボラティリティ・フィルター (Step 2)
+        if df_1m is not None and len(df_1m) >= 20:
+            # BB幅が直近平均の60%以下かどうか
+            close = df_1m["close"]
+            bb_mid = close.rolling(20).mean()
+            bb_std = close.rolling(20).std()
+            bb_width = (bb_std * 4) / bb_mid
+            avg_width = bb_width.rolling(100).mean().iloc[-1] if len(bb_width) >= 100 else bb_width.mean()
+            
+            if not pd.isna(bb_width.iloc[-1]) and bb_width.iloc[-1] < (avg_width * 0.6):
+                result.mid.volatility_low = True
+
+        # 3. 中央50%圏内の回避判定 (Step 2)
+        if result.mid.sr_nearest_resistance > result.mid.sr_nearest_support:
+            band = result.mid.sr_nearest_resistance - result.mid.sr_nearest_support
+            if df_trig is not None and len(df_trig) > 0:
+                price = float(df_trig["close"].iloc[-1])
+            else:
+                price = 0.0
+            mid_low = result.mid.sr_nearest_support + band * 0.25
+            mid_high = result.mid.sr_nearest_resistance - band * 0.25
+            result.mid.is_middle_zone = mid_low <= price <= mid_high
 
         # ── STEP4: 矛盾チェック・最終判断 ─────────────────────
         result.conflict_flags = self._get_conflict().detect(
@@ -198,35 +328,67 @@ class ReasoningEngine:
         trig  = result.trigger
         conflicts = result.conflict_flags
 
-        # 矛盾があれば強制WAIT
-        if conflicts:
-            result.entry_decision = "WAIT"
-            result.confidence = "LOW"
-            result.entry_reason = f"矛盾フラグあり: {', '.join(conflicts)}"
-            return result
-
         # 方向決定: 上位足 + トリガーの一致
-        can_buy  = upper.trend in ("UP",)   and trig.direction == "BUY"
-        can_sell = upper.trend in ("DOWN",) and trig.direction == "SELL"
-
-        # 大循環ステージフィルター（1=買い優先, 4=売り優先, 2/3/5/6=様子見）
-        if upper.stage in (2, 3, 5, 6):
-            result.confidence = "LOW"
-        elif upper.stage in (1,):
-            can_buy = can_buy  # 問題なし
-        elif upper.stage in (4,):
-            can_sell = can_sell
+        # RANGEでもLS再ブレイク確認済みならブレイクアウトエントリーを許可
+        can_buy  = trig.direction == "BUY"  and (upper.trend == "UP"   or (upper.trend == "RANGE" and trig.ls_confirmed))
+        can_sell = trig.direction == "SELL" and (upper.trend == "DOWN" or (upper.trend == "RANGE" and trig.ls_confirmed))
 
         if can_buy:
             result.entry_decision = "BUY"
         elif can_sell:
             result.entry_decision = "SELL"
-        elif mid.pullback_valid and trig.direction != "WAIT":
-            # 上位足はRANGEでも押し目圏+トリガーなら中精度
-            result.entry_decision = trig.direction
-            result.confidence = "LOW"
         else:
             result.entry_decision = "WAIT"
+
+        # ── ラウンドナンバー (キリ番) 判定 (GBPUSD 等) ──
+        if result.symbol in ["GBPUSD", "EURUSD", "BTCUSD"]:
+            price = result.trigger.price
+            # 下2桁が00, 50, 000 等に近いか判定
+            is_round = (round(price * 100) % 50 == 0) or (round(price) % 1000 == 0)
+            if is_round:
+                result.trigger.reason += " / ラウンドナンバー接近"
+
+        # ── 鉄の掟：物理ブロック判定 ──────────────────────
+        # フラクタル構造の厳格化
+        if result.entry_decision != "WAIT":
+            if result.upper.trend != "RANGE" and result.upper.trend != result.trigger.direction:
+                conflicts.append("フラクタル構造不一致（上位足逆行）")
+        
+        # 1. 200MAブロック (Step 1)
+        if result.entry_decision == "BUY" and upper.price_vs_ma200 == "BELOW":
+            conflicts.append("200MA下での買い禁止")
+        if result.entry_decision == "SELL" and upper.price_vs_ma200 == "ABOVE":
+            conflicts.append("200MA上での売り禁止")
+
+        # 2. ボラティリティ・フィルター (Step 2)
+        if mid.volatility_low:
+            conflicts.append("ボラティリティ低下（RANGE_WAIT）")
+
+        # 3. レンジ中央回避 (Step 2)
+        if mid.is_middle_zone and upper.trend == "RANGE":
+            conflicts.append("レンジ中央（優位性なし）")
+
+        # 4. 壁までの距離 (Step 3)
+        if result.entry_decision == "BUY" and mid.sr_nearest_resistance > 0:
+            if result.tp_hint > mid.sr_nearest_resistance:
+                 conflicts.append("TPターゲット手前に強力な抵抗壁あり")
+
+        # 5. ステージ厳格化 (Step 1) — 大循環MA理論
+        # ステージ1(5>20>60 上昇): BUY最適 / ステージ6(5>60>20 上昇初期): BUY許容
+        # ステージ4(60>20>5 下降): SELL最適 / ステージ3(20>60>5 下降初期): SELL許容
+        # RANGE+LS確認済みはステージ制限を緩和（ブレイク方向のみ）
+        ls_override = upper.trend == "RANGE" and trig.ls_confirmed
+        if result.entry_decision == "BUY" and upper.stage not in (1, 6) and not ls_override:
+            conflicts.append(f"ステージ{upper.stage}での買い禁止（ステージ1,6以外）")
+        if result.entry_decision == "SELL" and upper.stage not in (3, 4) and not ls_override:
+            conflicts.append(f"ステージ{upper.stage}での売り禁止（ステージ3,4以外）")
+
+        # 矛盾があれば強制WAIT
+        if conflicts:
+            result.entry_decision = "WAIT"
+            result.confidence = "LOW"
+            result.entry_reason = f"鉄の掟により待機: {', '.join(conflicts)}"
+            return result
 
         # 信頼度評価
         strong_signals = sum([

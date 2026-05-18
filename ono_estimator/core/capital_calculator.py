@@ -29,6 +29,7 @@ def calc_capital(
     risk_pct: float = 1.0,
     leverage: int = 25,
     capital_jpy: float = 0,
+    alignment_score: float = 50.0, # AIの確信度 (0-100)
 ) -> Dict:
     """
     Returns:
@@ -45,6 +46,17 @@ def calc_capital(
     lotmul = LOT_SIZE.get(symbol, 100_000)
     jpy    = JPY_RATE.get(symbol, 150.0)
 
+    # [D] AI確信度に基づく動的リスク調整
+    # スコア50を基準(1.0x)とし、高確信度ならリスクを最大1.5倍、低確信度なら0.7倍に縮小
+    # ※上限を2.0→1.5、下限を0.5→0.7に厳格化（過大ロットによる爆損防止）
+    confidence_mult = max(0.7, min(1.5, alignment_score / 50.0))
+    adjusted_risk_pct = risk_pct * confidence_mult
+
+    # 高確信度時はSLを若干タイトに。ただし元SLの80%を下限として極端な縮小を防ぐ
+    raw_sl_mult = 1.3 - (alignment_score / 100.0) * 0.5   # 0.8 〜 1.3
+    sl_mult = max(0.8, raw_sl_mult)
+    adjusted_sl_pips = sl_pips * sl_mult
+
     # 証拠金 = price × lot_size / leverage × jpy_rate
     margin_per_lot = current_price * lotmul / leverage * jpy if current_price else 0
     # SL損失 = sl_pips × pip × lot_size × jpy_rate
@@ -55,7 +67,7 @@ def calc_capital(
 
     lot_for_risk = 0.0
     if capital_jpy > 0 and sl_loss_per_lot > 0:
-        risk_jpy = capital_jpy * risk_pct / 100
+        risk_jpy = capital_jpy * adjusted_risk_pct / 100
         lot_for_risk = round(risk_jpy / sl_loss_per_lot, 2)
 
     return {
@@ -64,6 +76,7 @@ def calc_capital(
         "min_capital_jpy":     round(min_capital),
         "recommended_capital": round(recommended),
         "lot_for_risk_pct":    lot_for_risk,
-        "sl_pips":             sl_pips,
-        "risk_pct":            risk_pct,
+        "sl_pips":             round(adjusted_sl_pips, 2),
+        "risk_pct":            round(adjusted_risk_pct, 2),
+        "confidence_mult":     round(confidence_mult, 2),
     }

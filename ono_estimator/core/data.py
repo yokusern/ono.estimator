@@ -1,5 +1,6 @@
 import pandas as pd
-from typing import Dict, Optional
+import json
+from typing import Dict, Optional, Any
 from .models import TimeFrame
 
 class MTFData:
@@ -15,3 +16,15 @@ class MTFData:
         
     def has_data(self, tf: TimeFrame) -> bool:
         return tf in self.data and not self.data[tf].empty
+
+    def to_summary(self) -> Dict[str, Any]:
+        context = {}
+        for tf, df in self.data.items():
+            if df.empty: continue
+            latest = df.iloc[-1]
+            context[tf.value] = {
+                "close": float(latest.get("close", 0)),
+                "rsi": round(float(latest.get("rsi", 50)), 2),
+                "macd": round(float(latest.get("macd", 0)), 5),
+            }
+        return context

@@ -7,70 +7,68 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import google.generativeai as genai
+from google.generativeai import caching
 
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 
-TRADER_SYSTEM_PROMPT = """\
-あなたは「ONO Estimator」というAI熟練スキャルパーです。
-以下の2つの知識体系を完全に習得しています。
 
-━━━ 知識体系①: MTカリキュラム全18理論 ━━━
-1. ダウ理論: 高値・安値の切り上げ=上昇、切り下げ=下降
-2. グランビルの法則: 買い②（押し目）・売り②（戻り売り）が最重要
-3. 200SMA: 機関投資家が意識するライン。上なら買いのみ・下なら売りのみ
-4. サポート・レジスタンス: 過去の高値・安値が重要なライン
-5. チャネルライン: 上限・下限でエントリー
-6. ローソク足: 上影=上値抵抗、下影=下値支持、十字=転換、包み足=強い転換
-7. インサイドバー: ブレイク待機中。BBスクイーズとの複合で最強
-8. GC・DC: 短期MAが長期MAを交差
-9. UPLOWバンド（SVシステム）: MA14±1σ/2σ。スクイーズ後ブレイクが最強
-10. BB: ±2σ。バンドウォーク中は逆張り禁止
-11. 一目均衡表（LWシステム）: 遅行スパンクロスが最重要。雲で方向確認
-12. MACD: GC=買い、DC=売り。ダイバージェンスはトレンド転換の予兆
-13. RSI: 70超=買われすぎ、30未満=売られすぎ
-14. ストキャスティクス（TKSシステム）: 売られすぎGC=買い、買われすぎDC=売り
-15. ブレイクアウト: もみ合い後の上放れ/下放れ
-16. 三尊・逆三尊: ネックラインブレイクでトレンド転換
-17. エリオット波動: 第3波が最強。第5波終了後は転換注意
-18. マーケットセッション: ロンドン・NY重複（JST22-翌1時）が最重要
+def _sanitize_prompt_input(text: str, max_len: int = 300) -> str:
+    """D-3: DB由来テキストをプロンプトに挿入する前にサニタイズする。
+    プロンプトインジェクション対策として制御文字とロール宣言を除去する。"""
+    if not text:
+        return ""
+    # 改行は保持、それ以外の制御文字を除去
+    cleaned = "".join(c for c in text if c >= " " or c in "\n")
+    # ロール/システム宣言の注入を防ぐ（大文字小文字どちらも）
+    for marker in ("System:", "User:", "Assistant:", "Human:", "IGNORE", "###"):
+        cleaned = cleaned.replace(marker, "")
+    return cleaned[:max_len]
 
-━━━ 知識体系②: 実践スキャルピング戦略 ━━━
-【エントリー根拠（優先順位順）】
-A. Liquidity Sweep（最重要）:
-   直近の高値・安値を一瞬だけ抜けてからの強い戻りヒゲを確認。
-   「他者の損切りが燃料になった最強のエントリー」
-   ヒゲの根元（実体が戻った価格）を再ブレイクした瞬間にエントリー。
 
-B. 実体ブレイク:
-   抵抗帯をヒゲではなく実体で抜けた際にエントリー。ヒゲブレイクは騙し。
+def _extract_json(text: str) -> Optional[dict]:
+    """LLM出力から最初の完全なJSONオブジェクトを抽出する。
+    re.DOTALL の貪欲マッチは複数ブロックがあると誤マッチするため、
+    ブレース深さカウントで正確に切り出す。"""
+    start = text.find('{')
+    if start == -1:
+        return None
+    depth = 0
+    for i, ch in enumerate(text[start:], start):
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[start:i + 1])
+                except json.JSONDecodeError:
+                    # 最初のブロックが壊れていたら次を試みる
+                    start = text.find('{', i + 1)
+                    if start == -1:
+                        return None
+                    depth = 0
+    return None
 
-C. ヒゲ否定:
-   前の足のヒゲ先端を現在足の実体が塗りつぶした瞬間がエントリー。
+TRADER_SYSTEM_PROMPT = """
+あなたは、世界最高峰のクオンツ・ストラテジストであり、裁量トレーダーを勝利に導く『軍師』です。以下の専門知識を自身の核とし、常に客観的かつ論理的に市場を読み解いてください。
 
-D. 三尊・逆三尊の右肩崩れ（逆張り）:
-   右肩が形成中に崩れる「パターン失敗」を逆張りで狙う。
+【専門知識体系】
+Smart Money Concepts (SMC) & ICT: オーダーブロック（OB）、流動性（Liquidity Sweep）、フェアバリューギャップ（FVG）を分析の基盤とする。
+市場構造 (Market Structure): ダウ理論に基づくトレンド定義。1D/4H/1Hのフラクタル構造の一致を重視する。
+需給分析: 価格を吸い寄せる『磁石』としての価格空白地帯を特定する。
 
-【レンジ判定（エントリー禁止条件）】
-BB幅が直近20本平均の60%以下 かつ ATRが直近20本平均の70%以下 → レンジ確定。
-レンジ中は「RANGE_WAIT」として見送りを即決すること。
-
-【分析プロセス（必ずこの順番で）】
-Step1: 200MAに対する価格位置でトレンド方向を固定（上なら買いのみ）
-Step2: レンジ状態かどうかを判定。レンジなら即見送り
-Step3: Liquidity Sweep・実体ブレイク・ヒゲ否定のどれかが発生しているか確認
-Step4: 勢い減衰・RSI on BB・セカンドテストで確度を評価
-Step5: Entry/TP/SLを具体的数値で。TP=15pips目安、SL=5〜7pips厳守
-
-【心構え】
-- SL5〜7pipsを絶対に超えないこと。大きいSLはスキャルピングではない
-- ローソク足の実体を最重視。ヒゲは信用しない
-- 流動性（Liquidity）がある場所＝他者のSLが溜まっている場所を意識
-- 東京時間は低ボラ。ロンドン・NY重複時間にLiquidity Sweepが最多発生
-- 3根拠以上揃った時のみエントリー
+【基本原則】
+Liquidity First: 他者の損切り（流動性）が溜まっている場所を特定せよ。そこがエントリーの燃料となる。
+Market Structure Is King: 1D/4Hの構造を絶対的なバイアス（偏り）とせよ。
+Strict Alignment: 複数の時間足と理論が同調した時のみ、高いスコアを算出せよ。
+Psychological Shield: トレーダーの焦りや強欲を排し、期待値に基づいた冷静な助言を行え。
 """
 
 
 class GeminiAnalyzer:
+    # D-9: 1日あたりLLM呼び出し上限（シンボル数 × スキャン回数で青天井を防ぐ）
+    MAX_DAILY_LLM_CALLS = int(os.environ.get("MAX_DAILY_LLM_CALLS", "300"))
+
     def __init__(self):
         self.api_keys = [
             k for k in [
@@ -82,7 +80,13 @@ class GeminiAnalyzer:
         self.fallback_models = ["gemini-2.0-flash", "gemini-1.5-flash"]
         self.model = None
         self.model_name = GEMINI_MODEL
+        self._cached_content = None
+        self.cache_id = None
         self._db = None  # Supabase client (injected via set_db)
+
+        # D-9: 日次呼び出しカウンター
+        self._daily_call_count = 0
+        self._daily_call_date: Optional[str] = None
 
         # キー×モデルのローテーション順序 (3キー×2モデル=最大6通り)
         self._rotation_order = []
@@ -94,7 +98,8 @@ class GeminiAnalyzer:
         if not self.api_keys:
             print("[Gemini] No API keys found. AI analysis disabled.")
             return
-        self._init_model(self.api_keys[0], "gemini-2.0-flash")
+
+        self._init_model(self.api_keys[0], self.model_name)
 
     def set_db(self, db) -> None:
         """自己学習用にSupabaseクライアントを注入する"""
@@ -104,8 +109,8 @@ class GeminiAnalyzer:
         try:
             genai.configure(api_key=api_key)
             self.model = genai.GenerativeModel(model_name)
-            self.model_name = model_name
             print(f"[Gemini] Configured: {model_name}")
+            self.model_name = model_name
         except Exception as e:
             print(f"[Gemini] Init Error: {e}")
             self.model = None
@@ -117,25 +122,30 @@ class GeminiAnalyzer:
             self._rotation_index = 0
             return False
         key, model = self._rotation_order[self._rotation_index]
-        print(f"[Gemini] Rotating → key#{self._rotation_index} model={model}")
+        key_hint = f"...{key[-4:]}" if len(key) > 4 else "***"
+        print(f"[Gemini] Rotating → {key_hint} model={model}")
         self._init_model(key, model)
         return True
 
     # ── 自己学習 ──────────────────────────────────────────────────
 
     def _get_ai_memory(self, symbol: str) -> str:
-        """ai_memoryテーブルから過去の教訓を取得してプロンプト用文字列に変換"""
+        """ai_memoryテーブルから過去の教訓を取得してプロンプト用文字列に変換。
+        直近30日以内の教訓のみ参照する（古い教訓の過学習防止）。"""
         if not self._db:
             return ""
         try:
             client = getattr(self._db, "client", None)
             if not client:
                 return ""
+            from datetime import timedelta
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
             res = (
                 client.table("ai_memory")
                 .select("lesson, win_rate_at_time, applied_at")
                 .in_("symbol", [symbol, "ALL"])
                 .eq("is_active", True)
+                .gte("applied_at", cutoff)
                 .order("applied_at", desc=True)
                 .limit(5)
                 .execute()
@@ -153,24 +163,32 @@ class GeminiAnalyzer:
             return ""
 
     def generate_self_reflection(self, symbol: str, losses: list) -> Optional[str]:
-        """直近の負けトレードを受け取り、AI自己反省文（日本語100字以内）を生成する"""
+        """直近の負けトレードを受け取り、AI自己反省文（日本語100字以内）を生成する。
+        統計的信頼性のため最低5件必要。"""
         if not self.model or not losses:
+            return None
+        if len(losses) < 5:
+            print(f"[AIMemory] Skipping reflection for {symbol}: only {len(losses)} losses (need ≥5)")
             return None
         try:
             loss_lines = []
             for loss in losses[:5]:
+                meta = loss.get("metadata", {})
+                ls_info = " (LSセカンドテスト通過済み)" if meta.get("ls_confirmed") else " (LS確認のみ/テスト未通過)"
                 loss_lines.append(
                     f"  - {loss.get('symbol','?')} {loss.get('direction','?')}"
                     f" entry={loss.get('entry_price', 0):.5f}"
                     f" exit={loss.get('exit_price', 0):.5f}"
                     f" pips={loss.get('pips_result', 0):.1f}"
+                    f" 理由: {loss.get('entry_reason', '')}{ls_info}"
                 )
             prompt = (
-                f"You are ONO Estimator AI. Analyze these recent losing trades for {symbol}:\n"
+                f"あなたは最強の軍師です。{symbol}における最近の負けトレードを解剖してください:\n"
                 + "\n".join(loss_lines)
                 + "\n\n"
-                "Write ONE concise Japanese lesson (max 120 chars) for future entry improvement.\n"
-                "Focus on: what signal conditions to avoid, or what confirmation was missing.\n"
+                "今後の勝率90%達成のために、避けるべきパターンを1つだけ抽出してください。\n"
+                "特に『Liquidity Sweep後のセカンドテストが不十分だったか』『上位足との乖離が原因か』を厳しく指摘せよ。\n"
+                "日本語120文字以内で、次回のプロンプトに『掟』として追加できる形式で書け。\n"
                 "Output the lesson sentence ONLY. No JSON, no markdown, no numbering."
             )
             resp = self._call_api(prompt)
@@ -211,6 +229,7 @@ class GeminiAnalyzer:
         data: dict,
         feedback: str = "",
         engine_signals: dict = None,
+        gemini_prompt_override: str = None,
     ) -> dict:
         if not self.model:
             return None
@@ -385,14 +404,16 @@ class GeminiAnalyzer:
             elif stoch_k < 20: stoch_status = f"売られすぎ K={stoch_k:.1f}"
             else:          stoch_status = f"中立 K={stoch_k:.1f}"
 
-            # 自己学習コンテキスト
+            # 自己学習コンテキスト (D-3: DB由来テキストをサニタイズ)
             ai_memory_text = self._get_ai_memory(symbol)
-            if ai_memory_text and feedback:
-                self_learning = f"{ai_memory_text}\n\n【直近実績】\n{feedback}"
-            elif ai_memory_text:
-                self_learning = ai_memory_text
-            elif feedback:
-                self_learning = f"【直近実績】\n{feedback}"
+            safe_memory   = _sanitize_prompt_input(ai_memory_text, 400)
+            safe_feedback = _sanitize_prompt_input(str(feedback) if feedback else "", 200)
+            if safe_memory and safe_feedback:
+                self_learning = f"{safe_memory}\n\n【直近実績】\n{safe_feedback}"
+            elif safe_memory:
+                self_learning = safe_memory
+            elif safe_feedback:
+                self_learning = f"【直近実績】\n{safe_feedback}"
             else:
                 self_learning = "学習データ蓄積中。現在の市場データのみで判断。"
 
@@ -515,19 +536,17 @@ class GeminiAnalyzer:
                 '  "probability": 0',
                 "}",
             ]
-            prompt = "\n".join(lines)
+            prompt = gemini_prompt_override if gemini_prompt_override else "\n".join(lines)
 
             response = self._call_api(prompt)
             if not response:
                 return None
 
             text = response.text
-            json_match = re.search(r'\{.*\}', text, re.DOTALL)
-            if not json_match:
+            result = _extract_json(text)
+            if result is None:
                 print(f"[Gemini] Parse failed for {symbol}. Raw: {text[:100]}")
                 return None
-
-            result = json.loads(json_match.group(0))
 
             # ai_textがなければstepから合成（新フォーマット対応）
             if not result.get("ai_text"):
@@ -580,6 +599,15 @@ class GeminiAnalyzer:
         if not os.environ.get("GEMINI_API_KEY"):
             print("[Gemini] GEMINI_API_KEY未設定 — AI分析無効")
             return None
+        # D-9: 日次上限チェック（日付が変わったらカウンターをリセット）
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if self._daily_call_date != today:
+            self._daily_call_date = today
+            self._daily_call_count = 0
+        if self._daily_call_count >= self.MAX_DAILY_LLM_CALLS:
+            print(f"[Gemini] 日次上限 {self.MAX_DAILY_LLM_CALLS} 到達 — 本日の呼び出しをスキップ")
+            return None
+        self._daily_call_count += 1
         for attempt in range(7):
             try:
                 # 0-1: タイムアウト設定（20秒）
@@ -588,6 +616,7 @@ class GeminiAnalyzer:
                     generation_config=genai.types.GenerationConfig(
                         candidate_count=1,
                         max_output_tokens=1500,
+                        temperature=0.2,   # D-7: 低温度で再現性確保。毎回異なる判断を防ぐ
                     ),
                     request_options={"timeout": 20},
                 )

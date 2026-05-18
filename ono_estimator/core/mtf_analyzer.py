@@ -1,14 +1,15 @@
 """
 Step A2: マルチタイムフレーム（MTF）統合
-1h / 4h / 1d の3TF を分析し、一致度スコアを返す。
+上位足(1d, 4h)で環境認識を行い、執行足(1h)でシグナルを確認。
 """
 import logging
 import pandas as pd
-from typing import Optional
+from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
 
-TF_LIST = ["1h", "4h", "1d"]
+CONTEXT_TFS = ["1d", "4h"]
+EXECUTION_TFS = ["1h"]
 
 
 def _detect_bias(df: pd.DataFrame) -> str:
@@ -52,38 +53,31 @@ def _detect_bias(df: pd.DataFrame) -> str:
 def analyze_mtf(symbol: str, fetcher) -> dict:
     """
     各 TF の OHLCV を取得して方向性を判定し、一致度を返す。
-    戻り値: { "1h": "BUY", "4h": "BUY", "1d": "WAIT", "agreement": 2, "strength": "NORMAL", "score_bonus": 14 }
     """
     try:
-        df_base = fetcher.fetch_ohlcv(symbol, interval="1min")
+        # 効率化のため、必要な時間足のみを計算
+        df_base = fetcher.fetch_ohlcv(symbol, interval="5min")
         if df_base is None or df_base.empty:
-            return {"agreement": 0, "strength": "WEAK", "score_bonus": 0}
+            return {}
 
-        tf_biases = {}
-        for tf in TF_LIST:
+        analysis_results = {"context": {}, "execution": {}}
+        
+        # 環境認識 (Context)
+        for tf in CONTEXT_TFS:
             try:
                 df_tf = fetcher.resample_ohlcv(df_base, tf)
                 df_tf = fetcher.calculate_indicators(df_tf)
-                tf_biases[tf] = _detect_bias(df_tf)
+                analysis_results["context"][tf] = _detect_bias(df_tf)
             except Exception:
-                tf_biases[tf] = "WAIT"
+                analysis_results["context"][tf] = "WAIT"
 
-        biases = list(tf_biases.values())
-        buy_count = biases.count("BUY")
-        sell_count = biases.count("SELL")
-        agreement = max(buy_count, sell_count)
+        # 執行判断 (Execution)
+        for tf in EXECUTION_TFS:
+            df_tf = fetcher.resample_ohlcv(df_base, tf)
+            df_tf = fetcher.calculate_indicators(df_tf)
+            analysis_results["execution"][tf] = _detect_bias(df_tf)
 
-        if agreement == 3:
-            strength = "STRONG"
-            score_bonus = 20
-        elif agreement == 2:
-            strength = "NORMAL"
-            score_bonus = 14
-        else:
-            strength = "WEAK"
-            score_bonus = 0
-
-        return {**tf_biases, "agreement": agreement, "strength": strength, "score_bonus": score_bonus}
+        return analysis_results
     except Exception as e:
         logger.warning(f"[MTF] {symbol}: {e}")
-        return {"agreement": 0, "strength": "WEAK", "score_bonus": 0}
+        return {}

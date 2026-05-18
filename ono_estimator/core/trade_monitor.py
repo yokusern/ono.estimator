@@ -79,32 +79,33 @@ class TradeMonitor:
                 tp2    = sig.get("take_profit_2") or 0
                 sl     = sig.get("stop_loss") or 0
 
-                msg = None
+                event_type = None
+                description = ""
 
                 if direction == "BUY":
-                    if tp2 and current >= tp2:
-                        msg = f"🎯🎯 TP2 到達！ {sym} — 大成功\nEntry:{entry:.3f} → Now:{current:.3f}"
-                    elif tp1 and current >= tp1:
-                        msg = f"🎯 TP1 到達！ {sym} — 利益確定を推奨\nEntry:{entry:.3f} → Now:{current:.3f}"
-                    elif sl and current <= sl:
-                        msg = f"🛑 SL 到達 — {sym} 損切り\nEntry:{entry:.3f} → Now:{current:.3f}"
+                    if tp2 and current >= tp2: event_type = "SUCCESS_TP2"
+                    elif tp1 and current >= tp1: event_type = "SUCCESS_TP1"
+                    elif sl and current <= sl: event_type = "LOSS_SL"
                 elif direction == "SELL":
-                    if tp2 and current <= tp2:
-                        msg = f"🎯🎯 TP2 到達！ {sym} — 大成功\nEntry:{entry:.3f} → Now:{current:.3f}"
-                    elif tp1 and current <= tp1:
-                        msg = f"🎯 TP1 到達！ {sym} — 利益確定を推奨\nEntry:{entry:.3f} → Now:{current:.3f}"
-                    elif sl and current >= sl:
-                        msg = f"🛑 SL 到達 — {sym} 損切り\nEntry:{entry:.3f} → Now:{current:.3f}"
+                    if tp2 and current <= tp2: event_type = "SUCCESS_TP2"
+                    elif tp1 and current <= tp1: event_type = "SUCCESS_TP1"
+                    elif sl and current >= sl: event_type = "LOSS_SL"
 
-                if msg and self.notifier:
+                if event_type and self.notifier:
+                    # Deduplicate monitoring events
+                    if self.notifier._is_duplicate(sym, "MONITOR", event_type):
+                        continue
+                    
+                    # Structure the update message
+                    ai_data = {
+                        "direction": direction,
+                        "entry_reason_short": f"Target {event_type} reached.",
+                        "ai_text": f"Status update for {sym}. Entry {entry:.3f} -> Current {current:.3f}",
+                        "exit_condition": "Trailing stop moved to entry." if "TP1" in event_type else "Position closed."
+                    }
+                    
                     try:
-                        webhook = self.notifier.default_webhook
-                        if webhook:
-                            requests.post(webhook, json={
-                                "content": msg,
-                                "username": "ONO Estimator — Trade Monitor",
-                            }, timeout=5)
-                        logger.info(f"[TradeMonitor] {sym} → notified: {msg[:40]}")
+                        self.notifier.notify_ai_judgment(sym, ai_data, base_system="MONITOR")
                     except Exception:
                         pass
 

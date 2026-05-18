@@ -13,15 +13,17 @@ class SupabaseClient:
     def __init__(self):
         url = os.environ.get("SUPABASE_URL")
         key = os.environ.get("SUPABASE_KEY")
+        self._available = False
         if not url or not key:
             self.client = None
-            print("[Supabase] No credentials. Running without DB.")
+            logger.warning("[Supabase] 認証情報なし — DB機能無効。シグナル・デモ結果は保存されません。")
             return
         try:
             self.client = create_client(url, key)
-            print("[Supabase] Connected ✅")
+            self._available = True
+            logger.info("[Supabase] 接続成功")
         except Exception as e:
-            print(f"[Supabase] Connection failed: {e}")
+            logger.error(f"[Supabase] 接続失敗: {e} — DB機能無効。トレード履歴は揮発します。")
             self.client = None
 
     # ─── predictions ──────────────────────────────────────────
@@ -106,17 +108,9 @@ class SupabaseClient:
                 "is_correct": is_correct,
                 "is_scored": True,
             }
-            self.client.table("predictions").update(update_data).eq("id", row_id).execute()
-            # performance_logに記録
-            if outcome:
-                self.client.table("performance_log").insert({
-                    "prediction_id": row_id,
-                    "symbol": "UNKNOWN",
-                    "direction": "WAIT",
-                    "exit_price": actual_price,
-                    "outcome": outcome,
-                    "closed_at": datetime.utcnow().isoformat(),
-                }).execute()
+            # E-3: is_scored=False の行のみ更新してレース・コンディション時の二重スコア防止
+            self.client.table("predictions").update(update_data)\
+                .eq("id", row_id).eq("is_scored", False).execute()
         except Exception as e:
             logger.warning(f"[Supabase] update_prediction_result error: {e}")
 
@@ -148,7 +142,7 @@ class SupabaseClient:
             return _empty_perf()
         try:
             res = self.client.table("performance_log")\
-                .select("outcome,pips_result,symbol,direction,rr_achieved")\
+                .select("outcome,pips_result,symbol,direction,rr_achieved,closed_at")\
                 .neq("outcome", "PENDING")\
                 .order("closed_at", desc=True)\
                 .limit(200).execute()
@@ -196,6 +190,7 @@ class SupabaseClient:
                         "outcome": r.get("outcome"),
                         "pips": r.get("pips_result"),
                         "rr": r.get("rr_achieved"),
+                        "closed_at": r.get("closed_at"),
                     }
                     for r in rows[:30]
                 ],
@@ -274,6 +269,10 @@ class SupabaseClient:
                 "entry_price": _f(pos.get("entry_price")),
                 "tp_price":    _f(pos.get("tp_price")),
                 "sl_price":    _f(pos.get("sl_price")),
+                "lot":         _f(pos.get("lot")),
+                "tier":        str(pos.get("tier", "")),
+                "route":       str(pos.get("route", "")),
+                "metadata":    pos.get("metadata") or {},
                 "reason":      str(pos.get("reason", ""))[:500],
                 "status":      "OPEN",
                 "opened_at":   pos.get("opened_at") or datetime.utcnow().isoformat(),
@@ -284,6 +283,19 @@ class SupabaseClient:
         except Exception as e:
             logger.warning(f"[Supabase] save_demo_position error: {e}")
         return None
+
+    def has_open_position(self, symbol: str) -> bool:
+        """特定の銘柄に現在 OPEN 状態のポジションがあるか確認"""
+        if not self.client:
+            return False
+        try:
+            res = self.client.table("demo_positions")\
+                .select("id")\
+                .eq("symbol", symbol)\
+                .eq("status", "OPEN").execute()
+            return len(res.data or []) > 0
+        except Exception:
+            return False
 
     def close_demo_position(self, symbol: str, close_price: float,
                              result: str, pips: float) -> Optional[float]:
@@ -320,6 +332,33 @@ class SupabaseClient:
         except Exception as e:
             logger.warning(f"[Supabase] get_demo_win_rate error: {e}")
         return None
+
+    def get_open_demo_positions(self) -> list:
+        """OPEN中のデモポジション一覧 (再起動時の状態復元用)"""
+        if not self.client:
+            return []
+        try:
+            res = self.client.table("demo_positions")\
+                .select("*")\
+                .eq("status", "OPEN")\
+                .execute()
+            return res.data or []
+        except Exception as e:
+            logger.warning(f"[Supabase] get_open_demo_positions error: {e}")
+            return []
+
+    def update_demo_sl(self, symbol: str, new_sl: float) -> None:
+        """トレーリングストップ更新 — OPENポジションのSLを移動する"""
+        if not self.client:
+            return
+        try:
+            self.client.table("demo_positions")\
+                .update({"sl_price": round(float(new_sl), 5)})\
+                .eq("symbol", symbol)\
+                .eq("status", "OPEN")\
+                .execute()
+        except Exception as e:
+            logger.warning(f"[Supabase] update_demo_sl error: {e}")
 
     def get_demo_positions(self, limit: int = 20) -> list:
         if not self.client:
