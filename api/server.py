@@ -136,7 +136,7 @@ def notify_loss_for_circuit(symbol: str) -> None:
 
 SCAN_INTERVAL_SEC    = 300   # 5分ごと自動スキャン
 ENTRY_MIN_CONFIDENCE = {"HIGH", "MEDIUM"}
-DAILY_SIGNAL_LIMIT   = 8    # 1日の最大シグナル通知件数
+DAILY_SIGNAL_LIMIT   = 20   # 1日の最大シグナル通知件数
 
 # ─── 1日シグナルカウンター ────────────────────────────────────────
 _signal_count_today: int = 0
