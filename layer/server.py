@@ -16,6 +16,22 @@ from ono_estimator.core.notifier import Notifier
 from ono_estimator.core.database import SupabaseClient
 from ono_estimator.core import ONOPredictionEngine
 
+# ─── チートシグナル スキャナー ──────────────────────────────────
+try:
+    import sys
+    from pathlib import Path as _Path
+    # BUG FIX: cheat_signal_runner.py は ONO-ESTIMATOR/ 直下にある。
+    # fx_analysis/ ではなく ONO-ESTIMATOR/ をパスに追加する。
+    _ono_root = _Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(_ono_root))
+    sys.path.insert(0, str(_ono_root / "fx_analysis"))
+    from cheat_signal_runner import run_cheat_scan as _run_cheat_scan
+    _cheat_scan_available = True
+    print("[Server] チートシグナル スキャナー ロード完了 ✅")
+except Exception as _ce:
+    _cheat_scan_available = False
+    print(f"[Server] チートシグナル スキャナー unavailable: {_ce}")
+
 # ─── v6.0 新エンジン ──────────────────────────────────────────
 try:
     from ono_estimator.core.engine_v2 import ONOPredictionEngineV2
@@ -421,12 +437,38 @@ async def anti_sleep_loop():
         await asyncio.sleep(240)
 
 
+async def cheat_signal_loop():
+    """
+    4分（240秒）間隔でチートシグナルをスキャンし Discord に通知する。
+    anti_sleep_loop と同周期で動くことで無駄なスリープを防ぐ。
+    """
+    if not _cheat_scan_available:
+        print("[CheatSignal] スキャナー未利用可能 — ループ停止")
+        return
+    await asyncio.sleep(120)   # 起動後2分待ってから初回スキャン
+    while True:
+        start = time.time()
+        try:
+            loop = asyncio.get_event_loop()
+            fired = await loop.run_in_executor(None, _run_cheat_scan)
+            if fired:
+                print(f"[CheatSignal] {len(fired)}件のシグナルを通知しました")
+            else:
+                print("[CheatSignal] 条件を満たすシグナルなし")
+        except Exception as e:
+            print(f"[CheatSignal] エラー: {e}")
+            traceback.print_exc()
+        elapsed = time.time() - start
+        await asyncio.sleep(max(10, 240 - elapsed))
+
+
 # ─── API エンドポイント ────────────────────────────────────────
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(estimation_loop())
     asyncio.create_task(backtest_loop())
     asyncio.create_task(anti_sleep_loop())
+    asyncio.create_task(cheat_signal_loop())   # チートシグナル 4分周期
 
 
 @app.get("/")

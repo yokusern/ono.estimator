@@ -620,7 +620,8 @@ async def startup():
         logger.warning("[Startup] OANDA未設定 — リアルタイムFXデータはyfinanceで代替（15分遅延）")
 
     asyncio.create_task(_auto_scan_loop())
-    asyncio.create_task(_volatility_watch_loop())
+    # ボラティリティ警告は無効化（通知が多すぎるため）
+    # asyncio.create_task(_volatility_watch_loop())
 
 
 async def _auto_scan_loop():

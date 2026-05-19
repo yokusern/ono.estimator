@@ -24,3 +24,6 @@ build/
 # OS
 .DS_Store
 Thumbs.db
+
+# fx_analysis runtime data (SQLite DBs + yfinance cache CSVs)
+fx_analysis/data/
