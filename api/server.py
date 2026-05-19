@@ -38,6 +38,7 @@ from ono_estimator.core.backtester_v2 import BacktesterV2
 from ono_estimator.core.scanner_config import SCAN_SYMBOLS, SYMBOL_DISPLAY
 from ono_estimator.core.strategies import ALL_STRATEGIES, PRIORITY_SYMBOLS
 from ono_estimator.core.probability_engine import ProbabilityEngine, ProbabilityResult
+from ono_estimator.core.oanda_order_manager import OandaOrderManager
 from ono_estimator.indicators.chart_patterns import ChartPatterns
 
 # ─── チートシグナル スキャナー ──────────────────────────────────────
@@ -66,6 +67,7 @@ app.add_middleware(
 # ─── シングルトン ──────────────────────────────────────────────────
 _fetcher   = HybridDataFetcher()
 _oanda     = OandaFetcher()
+_oanda_order = OandaOrderManager()   # プラクティス口座への実注文
 _db        = SupabaseClient()
 _notifier  = Notifier(db=_db)
 _demo      = DemoTrader(db=_db)
@@ -626,7 +628,12 @@ def _analyze_symbol_v2(symbol: str, macro) -> Optional[dict]:
     )
 
     if should_enter:
-        lot = _risk.calc_lot(symbol=symbol, entry=price, sl=prob_result.sl) if prob_result.sl > 0 else 0.01
+        # ロット計算: OANDA実注文時はデフォルトロット優先、仮想デモは計算値
+        if _oanda_order.enabled and _oanda_order.supports(symbol):
+            lot = _oanda_order.default_lot
+        else:
+            lot = _risk.calc_lot(symbol=symbol, entry=price, sl=prob_result.sl) if prob_result.sl > 0 else 0.01
+
         opened = _demo.open_position(
             sym=symbol,
             direction=prob_result.direction,
@@ -643,6 +650,24 @@ def _analyze_symbol_v2(symbol: str, macro) -> Optional[dict]:
             _send_probability_signal(signal, prob_result)
             signal["demo_opened"] = True
             signal["lot"] = lot
+
+            # ── OANDA プラクティス口座へ実注文 ──────────────────────
+            if _oanda_order.enabled and _oanda_order.supports(symbol):
+                oanda_result = _oanda_order.place_market_order(
+                    symbol=symbol,
+                    direction=prob_result.direction,
+                    lot=lot,
+                    tp_price=prob_result.tp,
+                    sl_price=prob_result.sl,
+                    comment=f"ONO {prob_result.probability:.0f}% {conf}",
+                )
+                if oanda_result:
+                    signal["oanda_order_id"] = oanda_result.get("order_id")
+                    signal["oanda_fill_price"] = oanda_result.get("fill_price")
+                    logger.info(
+                        f"[OANDA] 注文完了 {symbol} {prob_result.direction} "
+                        f"lot={lot} tradeID={oanda_result.get('order_id')}"
+                    )
 
     return signal
 
