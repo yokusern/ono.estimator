@@ -120,6 +120,17 @@ class Notifier:
             "embeds": [{"description": desc[:2000], "color": color}],
         })
 
+    # ─── 生テキスト送信（確率シグナル・ブリーフィング用） ─────────
+    def send_raw(self, message: str) -> bool:
+        """Discord に文字列をそのまま送信する（2000字超は分割）"""
+        if not message:
+            return False
+        chunks = [message[i:i+1900] for i in range(0, len(message), 1900)]
+        ok = True
+        for chunk in chunks:
+            ok = self._post({"content": chunk}) and ok
+        return ok
+
     # ─── システム警告 ──────────────────────────────────────────
     def send_alert(self, message: str) -> None:
         self._post({"content": f"⚠️ {message}"})

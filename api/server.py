@@ -36,6 +36,8 @@ from ono_estimator.core.risk_calculator import RiskCalculator
 from ono_estimator.core.correlation_guard import CorrelationGuard
 from ono_estimator.core.backtester_v2 import BacktesterV2
 from ono_estimator.core.scanner_config import SCAN_SYMBOLS, SYMBOL_DISPLAY
+from ono_estimator.core.strategies import ALL_STRATEGIES, PRIORITY_SYMBOLS
+from ono_estimator.core.probability_engine import ProbabilityEngine, ProbabilityResult
 from ono_estimator.indicators.chart_patterns import ChartPatterns
 
 # ─── チートシグナル スキャナー ──────────────────────────────────────
@@ -73,6 +75,7 @@ _breakout  = BreakoutDetector()
 _risk      = RiskCalculator()
 _corr      = CorrelationGuard()
 _bt        = BacktesterV2()
+_prob      = ProbabilityEngine()   # 確率エンジン
 
 # ─── インメモリ状態 ───────────────────────────────────────────────
 _latest_signals: list = []
@@ -133,6 +136,24 @@ def notify_loss_for_circuit(symbol: str) -> None:
 
 SCAN_INTERVAL_SEC    = 300   # 5分ごと自動スキャン
 ENTRY_MIN_CONFIDENCE = {"HIGH", "MEDIUM"}
+DAILY_SIGNAL_LIMIT   = 8    # 1日の最大シグナル通知件数
+
+# ─── 1日シグナルカウンター ────────────────────────────────────────
+_signal_count_today: int = 0
+_signal_count_date:  str = ""
+
+def _should_send_signal() -> bool:
+    """1日の通知上限に達していない場合 True"""
+    global _signal_count_today, _signal_count_date
+    today = datetime.now().strftime("%Y-%m-%d")
+    if _signal_count_date != today:
+        _signal_count_today = 0
+        _signal_count_date  = today
+    return _signal_count_today < DAILY_SIGNAL_LIMIT
+
+def _increment_signal_count():
+    global _signal_count_today
+    _signal_count_today += 1
 
 # ─── ヘルス ──────────────────────────────────────────────────────
 @app.api_route("/api/health", methods=["GET", "HEAD"])
@@ -419,18 +440,23 @@ async def _run_scan():
     except Exception:
         pass
 
-    # 全シンボルを並列分析（sequential → asyncio.gather で高速化）
+    # 優先銘柄(9銘柄)は確率エンジン版、それ以外は既存エンジンで分析
     async def _analyze_one(sym: str):
         try:
-            res = await asyncio.to_thread(_analyze_symbol, sym, macro)
+            if sym in ALL_STRATEGIES:
+                res = await asyncio.to_thread(_analyze_symbol_v2, sym, macro)
+            else:
+                res = await asyncio.to_thread(_analyze_symbol, sym, macro)
             return res
         except Exception as e:
             logger.error(f"[Scan] {sym} error: {e}", exc_info=True)
             return None
 
-    results = await asyncio.gather(*[_analyze_one(sym) for sym in SCAN_SYMBOLS])
+    # 優先9銘柄を先頭に並べてスキャン対象を構築
+    scan_order = list(dict.fromkeys(PRIORITY_SYMBOLS + SCAN_SYMBOLS))
+    results = await asyncio.gather(*[_analyze_one(sym) for sym in scan_order])
     signals = []
-    for sym, result in zip(SCAN_SYMBOLS, results):
+    for sym, result in zip(scan_order, results):
         if result:
             signals.append(result)
             _price_cache[sym] = result.get("price", 0)
@@ -451,16 +477,251 @@ async def _run_scan():
     # デモポジション TP/SL 確認 + 相関ガード同期 + サーキットブレーカー更新
     positions_before = set(_demo.get_open_positions().keys())
     closed_results = _demo.check_and_close(_price_cache, _notifier)
-    for sym in positions_before - set(_demo.get_open_positions().keys()):
+    closed_syms = positions_before - set(_demo.get_open_positions().keys())
+    for sym in closed_syms:
         _corr.register_close(sym)
-        # 損失決済があればCBカウンターを増やす
         if isinstance(closed_results, dict) and closed_results.get(sym) == "LOSS":
             notify_loss_for_circuit(sym)
+        # 確率エンジンの自己学習: デモ決済結果を重みに反映
+        if sym in ALL_STRATEGIES and isinstance(closed_results, dict):
+            result_str = closed_results.get(sym)
+            if result_str in ("WIN", "LOSS"):
+                try:
+                    _prob.update_weights_from_result(sym, [], result_str)
+                except Exception as we:
+                    logger.warning(f"[WeightUpdate] {sym}: {we}")
 
     _scan_running = False
     active = sum(1 for s in signals if s["direction"] != "WAIT")
     bo     = sum(1 for s in signals if s.get("breakout_signal"))
     logger.info(f"[Scan] Done — {len(signals)} symbols | {active} signals | {bo} breakouts")
+
+
+# ─── 確率エンジン版シグナル送信 ──────────────────────────────────────
+def _send_probability_signal(signal: dict, prob_result: ProbabilityResult):
+    """根拠リスト付きDiscord通知（確率XX%スタイル）"""
+    direction = prob_result.direction
+    prob      = prob_result.probability
+    display   = signal.get("display", signal["symbol"])
+    price     = signal["price"]
+    sl        = prob_result.sl
+    tp        = prob_result.tp
+
+    arrow = "📈 **BUY**" if direction == "BUY" else "📉 **SELL**"
+    color = "🟢" if prob >= 75 else "🟡"
+
+    # 根拠リスト
+    ev_lines = []
+    for e in prob_result.evidence_list:
+        if e.direction == "PENALTY":
+            icon = "⚠️" if e.confirmed else "✅"
+            ev_lines.append(f"{icon} {e.label}: {e.detail}")
+        else:
+            icon = "✅" if e.confirmed else "❌"
+            pct  = f"+{e.weight}%" if e.weight > 0 else f"{e.weight}%"
+            ev_lines.append(f"{icon} {e.label} ({pct}): {e.detail}")
+
+    pip_size = ALL_STRATEGIES[signal["symbol"]].pip_size if signal["symbol"] in ALL_STRATEGIES else 0.0001
+    tp_pips  = abs(tp - price) / pip_size
+    sl_pips  = abs(sl - price) / pip_size
+    rr       = round(tp_pips / sl_pips, 1) if sl_pips > 0 else 0
+
+    msg = (
+        f"{color} {arrow} — **{display}** @ {price}\n"
+        f"確率: **{prob:.0f}%** ({prob_result.confirmed_count}根拠確認)\n\n"
+        f"**根拠:**\n" + "\n".join(ev_lines) + "\n\n"
+        f"SL: `{sl}` | TP: `{tp}`\n"
+        f"推定 TP:{tp_pips:.0f}pips / SL:{sl_pips:.0f}pips (RR {rr}:1)\n"
+        f"💰 デモトレード自動実行"
+    )
+
+    try:
+        _notifier.send_raw(msg)
+    except Exception:
+        _notifier.send_signal(
+            symbol=signal["symbol"], direction=direction,
+            confidence="HIGH" if prob >= 75 else "MEDIUM",
+            entry=price, sl=sl, tp=tp,
+            reason=f"確率 {prob:.0f}% | {prob_result.reason_text[:200]}",
+            macro_summary="",
+        )
+
+
+def _analyze_symbol_v2(symbol: str, macro) -> Optional[dict]:
+    """確率エンジンを使う銘柄特化分析 (PRIORITY_SYMBOLS 専用)"""
+
+    # オープン中のポジションはスキップ（クローズまでロック）
+    if symbol in _demo.open_positions:
+        return {
+            "symbol": symbol,
+            "display": ALL_STRATEGIES[symbol].display,
+            "direction": "LOCKED",
+            "reason": "ポジションオープン中（クローズ待ち）",
+            "scanned_at": datetime.now().isoformat(),
+        }
+
+    # データ取得
+    timeframes = ["5m", "15m", "1h", "4h"]
+    df_store: dict = {}
+    for tf in timeframes:
+        df = _fetch_ohlcv(symbol, tf)
+        if df is not None and not df.empty:
+            df_store[tf] = df
+
+    if not df_store:
+        return None
+
+    # 現在価格
+    live_price = None
+    if _oanda.is_configured and _oanda.supports(symbol):
+        live_price = _oanda.get_stream_price(symbol) or _oanda.get_live_price(symbol)
+    ref_df = df_store.get("5m") or df_store.get("15m") or next(iter(df_store.values()))
+    price  = live_price if live_price else float(ref_df["close"].iloc[-1])
+    _price_cache[symbol] = price
+
+    # マクロ取得
+    try:
+        macro_obj = _funda.get_macro()
+    except Exception:
+        macro_obj = macro
+
+    # 確率計算
+    try:
+        prob_result = _prob.analyze(symbol, df_store, macro_obj, price, _price_cache)
+    except Exception as e:
+        logger.error(f"[V2] {symbol} prob error: {e}", exc_info=True)
+        return None
+
+    strategy = ALL_STRATEGIES[symbol]
+    conf = "HIGH" if prob_result.probability >= 75 else "MEDIUM" if prob_result.probability >= 62 else "LOW"
+
+    signal = {
+        "symbol":      symbol,
+        "display":     strategy.display,
+        "price":       round(price, 5),
+        "direction":   prob_result.direction,
+        "probability": prob_result.probability,
+        "confidence":  conf,
+        "entry":       round(price, 5),
+        "sl":          prob_result.sl,
+        "tp":          prob_result.tp,
+        "reason":      prob_result.reason_text,
+        "evidence":    [
+            {"key": e.key, "label": e.label, "confirmed": e.confirmed,
+             "weight": e.weight, "direction": e.direction, "detail": e.detail}
+            for e in prob_result.evidence_list
+        ],
+        "scanned_at": datetime.now().isoformat(),
+    }
+
+    # シグナル発火判定
+    circuit_blocked = _check_circuit_breaker()
+    should_enter = (
+        prob_result.direction in ("BUY", "SELL")
+        and prob_result.probability >= 62
+        and prob_result.sl > 0
+        and prob_result.tp > 0
+        and _should_send_signal()
+        and not circuit_blocked
+    )
+
+    if should_enter:
+        lot = _risk.calc_lot(symbol=symbol, entry=price, sl=prob_result.sl) if prob_result.sl > 0 else 0.01
+        opened = _demo.open_position(
+            sym=symbol,
+            direction=prob_result.direction,
+            entry=price,
+            tp=prob_result.tp,
+            sl=prob_result.sl,
+            reason=f"[確率{prob_result.probability:.0f}%] {prob_result.reason_text[:200]}",
+            lot=lot,
+            confidence=conf,
+        )
+        if opened:
+            _increment_signal_count()
+            _corr.register_open(symbol, prob_result.direction)
+            _send_probability_signal(signal, prob_result)
+            signal["demo_opened"] = True
+            signal["lot"] = lot
+
+    return signal
+
+
+# ─── 朝のブリーフィング ───────────────────────────────────────────────
+async def _send_daily_briefing():
+    """毎朝10時 JST にDiscordへ相場ブリーフィングを送信"""
+    logger.info("[Briefing] 朝のブリーフィング生成中...")
+
+    lines = [f"📊 **朝の相場ブリーフィング** — {datetime.now().strftime('%Y-%m-%d')} 10:00 JST\n"]
+
+    for sym in PRIORITY_SYMBOLS:
+        strategy = ALL_STRATEGIES.get(sym)
+        if not strategy:
+            continue
+        try:
+            timeframes = ["1h", "4h"]
+            df_store: dict = {}
+            for tf in timeframes:
+                df = _fetch_ohlcv(sym, tf)
+                if df is not None and not df.empty:
+                    df_store[tf] = df
+            if not df_store:
+                continue
+
+            live_price = None
+            if _oanda.is_configured and _oanda.supports(sym):
+                live_price = _oanda.get_stream_price(sym) or _oanda.get_live_price(sym)
+            ref_df = df_store.get("1h") or next(iter(df_store.values()))
+            price  = live_price if live_price else float(ref_df["close"].iloc[-1])
+
+            levels = _prob.get_key_levels(sym, df_store, price)
+            bias   = levels.get("bias", "中立")
+            rsi    = levels.get("rsi", "N/A")
+
+            # キーレベル文字列
+            if "upper" in levels:
+                kl = f"上限 {levels['upper']} / 下限 {levels['lower']}"
+            elif "bb_upper" in levels:
+                kl = f"BB上 {levels['bb_upper']} / BB下 {levels['bb_lower']}"
+            elif "ema9" in levels:
+                kl = f"EMA9 {levels['ema9']} / EMA21 {levels['ema21']}"
+            else:
+                kl = "—"
+
+            lines.append(
+                f"**{strategy.display}** @ {round(price, 5)}\n"
+                f"  {kl} | RSI={rsi} | {bias}"
+            )
+        except Exception as e:
+            logger.warning(f"[Briefing] {sym}: {e}")
+
+    lines.append(f"\n今日の上限シグナル: {DAILY_SIGNAL_LIMIT}件")
+    msg = "\n".join(lines)
+    try:
+        _notifier.send_raw(msg)
+        logger.info("[Briefing] 送信完了")
+    except Exception as e:
+        logger.warning(f"[Briefing] 送信失敗: {e}")
+
+
+async def _daily_briefing_loop():
+    """毎朝 10:00 JST (01:00 UTC) に自動ブリーフィングを送信するループ"""
+    import zoneinfo
+    tz_jst = zoneinfo.ZoneInfo("Asia/Tokyo")
+    while True:
+        try:
+            now_jst = datetime.now(tz_jst)
+            target  = now_jst.replace(hour=10, minute=0, second=0, microsecond=0)
+            if now_jst >= target:
+                from datetime import timedelta
+                target += timedelta(days=1)
+            wait_secs = (target - now_jst).total_seconds()
+            logger.info(f"[Briefing] 次回ブリーフィングまで {wait_secs/3600:.1f}h")
+            await asyncio.sleep(wait_secs)
+            await _send_daily_briefing()
+        except Exception as e:
+            logger.error(f"[BriefingLoop] {e}", exc_info=True)
+            await asyncio.sleep(3600)
 
 
 def _analyze_symbol(symbol: str, macro) -> Optional[dict]:
@@ -716,6 +977,7 @@ async def startup():
         logger.warning("[Startup] OANDA未設定 — リアルタイムFXデータはyfinanceで代替（15分遅延）")
 
     asyncio.create_task(_auto_scan_loop())
+    asyncio.create_task(_daily_briefing_loop())  # 毎朝10時JST ブリーフィング
     # ボラティリティ警告は無効化（通知が多すぎるため）
     # asyncio.create_task(_volatility_watch_loop())
     if _cheat_available:
