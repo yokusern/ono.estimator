@@ -320,6 +320,71 @@ async def trigger_scan(background_tasks: BackgroundTasks):
     background_tasks.add_task(_run_scan)
     return {"status": "started"}
 
+
+@app.get("/api/dictionary")
+def get_dictionary():
+    """FX トレード辞典（fx_analysis/FX_トレード辞典.md）を構造化して返す"""
+    import re
+    from pathlib import Path as _P
+    _ono = _P(__file__).resolve().parent.parent
+    paths = [
+        _ono / "fx_analysis" / "FX_トレード辞典.md",
+        _ono / "FX_トレード辞典.md",
+    ]
+    content = None
+    for p in paths:
+        if p.exists():
+            content = p.read_text(encoding="utf-8")
+            break
+    if content is None:
+        return {"sections": [], "error": "辞典ファイルが見つかりません"}
+
+    def _parse_block(title: str, body: str) -> dict:
+        wr_matches = re.findall(r'(\d{2,3}\.\d)%', body)
+        win_rate = max((float(w) for w in wr_matches), default=None)
+        ev_m = re.findall(r'期待値[^\n]*?([+\-]?\d+\.?\d*(?:pips|\$|ドル))', body)
+        ev = ev_m[0] if ev_m else None
+        tags: list[str] = []
+        for pair in ["XAUUSD", "USDJPY", "EURUSD", "GBPUSD", "EURJPY"]:
+            if pair in body: tags.append(pair)
+        for tf in ["5m", "15m", "30m", "1h", "4h", "1d"]:
+            if tf in body: tags.append(tf)
+        for kw in ["買い", "売り", "反転", "ブレイク", "ダイバージェンス", "MTF", "スキャルピング"]:
+            if kw in body: tags.append(kw)
+        return {
+            "title": title, "body": body,
+            "win_rate": win_rate, "ev": ev,
+            "tags": list(dict.fromkeys(tags)),
+        }
+
+    sections = []
+    current_section = ""
+
+    # Split entire content into heading blocks (## and ###)
+    # Strategy: split by any heading line, keep heading with its body
+    blocks = re.split(r'\n(?=#{2,3} )', content)
+    for block in blocks:
+        m2 = re.match(r'^## (.+)', block)
+        m3 = re.match(r'^### (.+)', block)
+        if m2:
+            title = m2.group(1).strip()
+            if "目次" in title:
+                continue
+            body = "\n".join(block.split("\n")[1:]).strip()
+            current_section = title
+            # Only add ## sections that have no ### children (standalone sections)
+            # Check by seeing if body itself has substantial content without ###
+            if "###" not in body:
+                sections.append(_parse_block(title, body))
+        elif m3:
+            title = m3.group(1).strip()
+            body = "\n".join(block.split("\n")[1:]).strip()
+            entry = _parse_block(title, body)
+            entry["section"] = current_section
+            sections.append(entry)
+
+    return {"sections": sections, "total": len(sections)}
+
 # ─── データ取得ヘルパー ────────────────────────────────────────────
 def _fetch_ohlcv(symbol: str, tf: str):
     """FXペアはOanda、その他はHybridFetcherで取得する"""

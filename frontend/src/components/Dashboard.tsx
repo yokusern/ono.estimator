@@ -42,6 +42,9 @@ interface Performance {
   losses: number; profit_factor: number; total_pips: number;
   logs?: Array<{ symbol: string; direction: string; outcome: string; pips: number; closed_at: string }>;
 }
+interface DictSection {
+  title: string; body: string; win_rate: number | null; ev: string | null; tags: string[];
+}
 
 async function fetchJson<T>(path: string): Promise<T | null> {
   const ctrl = new AbortController();
@@ -160,9 +163,56 @@ function SignalCard({ s }: { s: Signal }) {
   );
 }
 
+// ─── Dict Card ───────────────────────────────────────────────────
+function DictCard({ s }: { s: DictSection }) {
+  const [open, setOpen] = useState(false);
+  const wrColor =
+    s.win_rate === null ? "text-gray-500"
+    : s.win_rate >= 80 ? "text-yellow-300"
+    : s.win_rate >= 65 ? "text-green-400"
+    : s.win_rate >= 55 ? "text-blue-300"
+    : "text-gray-400";
+
+  return (
+    <div className="bg-[#161b22] border border-white/10 rounded-xl overflow-hidden">
+      <button className="w-full text-left p-4 hover:bg-white/5 transition-colors"
+        onClick={() => setOpen(o => !o)}>
+        <div className="flex items-start justify-between gap-2">
+          <p className="font-bold text-white text-sm leading-snug">{s.title}</p>
+          <div className="flex items-center gap-2 shrink-0">
+            {s.win_rate !== null && (
+              <span className={`text-xs font-black tabular-nums ${wrColor}`}>
+                {s.win_rate.toFixed(1)}%
+              </span>
+            )}
+            {s.ev && (
+              <span className="text-xs text-gray-400 font-mono">EV {s.ev}</span>
+            )}
+            <span className="text-gray-600 text-xs">{open ? "▲" : "▼"}</span>
+          </div>
+        </div>
+        {s.tags.length > 0 && (
+          <div className="flex flex-wrap gap-1 mt-2">
+            {s.tags.slice(0, 6).map(t => (
+              <span key={t} className="px-1.5 py-0.5 rounded text-[10px] bg-gray-800 text-gray-400">{t}</span>
+            ))}
+          </div>
+        )}
+      </button>
+      {open && (
+        <div className="border-t border-white/10 p-4">
+          <pre className="text-xs text-gray-300 whitespace-pre-wrap font-sans leading-relaxed">
+            {s.body}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main Dashboard ───────────────────────────────────────────────
 export default function Dashboard() {
-  const [tab, setTab] = useState<"signals" | "chart" | "positions" | "stats">("signals");
+  const [tab, setTab] = useState<"signals" | "chart" | "positions" | "stats" | "dict">("signals");
   const [chartSymbol, setChartSymbol] = useState("OANDA:EURUSD");
   const [signals, setSignals] = useState<Signal[]>([]);
   const [macro, setMacro] = useState<MacroData | null>(null);
@@ -175,6 +225,17 @@ export default function Dashboard() {
   const [dirFilter, setDirFilter] = useState<"ALL" | "BUY" | "SELL">("ALL");
   const [confFilter, setConfFilter] = useState<"ALL" | "HIGH" | "MEDIUM">("ALL");
   const [boFilter, setBoFilter] = useState(false);
+  const [dictSections, setDictSections] = useState<DictSection[]>([]);
+  const [dictSearch, setDictSearch] = useState("");
+  const [dictLoaded, setDictLoaded] = useState(false);
+
+  const loadDict = useCallback(async () => {
+    if (dictLoaded) return;
+    const res = await fetchJson<{ sections: DictSection[] }>("/api/dictionary");
+    if (res?.sections) { setDictSections(res.sections); setDictLoaded(true); }
+  }, [dictLoaded]);
+
+  useEffect(() => { if (tab === "dict") loadDict(); }, [tab, loadDict]);
 
   const load = useCallback(async () => {
     const [sigRes, mac, posRes, prf] = await Promise.all([
@@ -213,10 +274,11 @@ export default function Dashboard() {
   const boCount = signals.filter(s => s.breakout_signal).length;
 
   const TABS = [
-    { id: "signals" as const, label: "📡 シグナル", count: active.length },
-    { id: "chart" as const, label: "📊 チャート", count: null },
+    { id: "signals" as const,   label: "📡 シグナル",   count: active.length },
+    { id: "chart" as const,     label: "📊 チャート",   count: null },
     { id: "positions" as const, label: "💼 ポジション", count: positions.length },
-    { id: "stats" as const, label: "📈 実績", count: null },
+    { id: "stats" as const,     label: "📈 実績",       count: null },
+    { id: "dict" as const,      label: "📖 辞典",       count: null },
   ];
 
   return (
@@ -473,6 +535,53 @@ export default function Dashboard() {
                 </div>
               ) : (
                 <p className="text-gray-600 text-sm">データなし</p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── Tab: 辞典 ── */}
+        {tab === "dict" && (
+          <div>
+            {/* Search */}
+            <div className="mb-4">
+              <input
+                type="text"
+                placeholder="🔍  パターン名・ペア・時間足で検索..."
+                value={dictSearch}
+                onChange={e => setDictSearch(e.target.value)}
+                className="w-full bg-[#161b22] border border-white/10 rounded-xl px-4 py-3
+                           text-sm text-white placeholder-gray-600
+                           focus:outline-none focus:border-blue-500/60"
+              />
+            </div>
+
+            {/* Legend */}
+            <div className="flex gap-4 mb-4 text-[11px] text-gray-500">
+              <span><span className="text-yellow-300 font-bold">●</span> 80%以上</span>
+              <span><span className="text-green-400 font-bold">●</span> 65-79%</span>
+              <span><span className="text-blue-300 font-bold">●</span> 55-64%</span>
+            </div>
+
+            {!dictLoaded && (
+              <p className="text-center text-gray-600 py-10 text-sm">辞典を読み込み中...</p>
+            )}
+
+            <div className="space-y-2">
+              {dictSections
+                .filter(s => {
+                  if (!dictSearch) return true;
+                  const q = dictSearch.toLowerCase();
+                  return (
+                    s.title.toLowerCase().includes(q) ||
+                    s.body.toLowerCase().includes(q) ||
+                    s.tags.some(t => t.toLowerCase().includes(q))
+                  );
+                })
+                .map((s, i) => <DictCard key={i} s={s} />)
+              }
+              {dictLoaded && dictSections.length === 0 && (
+                <p className="text-center text-gray-600 py-10 text-sm">セクションが見つかりません</p>
               )}
             </div>
           </div>
