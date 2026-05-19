@@ -38,6 +38,20 @@ from ono_estimator.core.backtester_v2 import BacktesterV2
 from ono_estimator.core.scanner_config import SCAN_SYMBOLS, SYMBOL_DISPLAY
 from ono_estimator.indicators.chart_patterns import ChartPatterns
 
+# ─── チートシグナル スキャナー ──────────────────────────────────────
+try:
+    import sys as _sys
+    from pathlib import Path as _Path
+    _ono_root = _Path(__file__).resolve().parent.parent
+    _sys.path.insert(0, str(_ono_root))
+    _sys.path.insert(0, str(_ono_root / "fx_analysis"))
+    from cheat_signal_runner import run_cheat_scan as _run_cheat_scan
+    _cheat_available = True
+    logger.info("[Startup] チートシグナル スキャナー ロード完了")
+except Exception as _ce:
+    _cheat_available = False
+    logger.warning(f"[Startup] チートシグナル スキャナー unavailable: {_ce}")
+
 # ─── App ──────────────────────────────────────────────────────────
 app = FastAPI(title="ONO Estimator v8.0", version="8.0.0")
 app.add_middleware(
@@ -586,6 +600,23 @@ def _analyze_symbol(symbol: str, macro) -> Optional[dict]:
     return signal
 
 
+# ─── チートシグナル 4分周期ループ ────────────────────────────────────
+async def _cheat_signal_loop():
+    await asyncio.sleep(120)   # 起動後2分待って初回スキャン
+    while True:
+        start = time.time()
+        try:
+            loop = asyncio.get_event_loop()
+            fired = await loop.run_in_executor(None, _run_cheat_scan)
+            if fired:
+                logger.info(f"[CheatSignal] {len(fired)}件のシグナルを通知")
+            else:
+                logger.debug("[CheatSignal] 条件を満たすシグナルなし")
+        except Exception as e:
+            logger.error(f"[CheatSignal] エラー: {e}", exc_info=True)
+        await asyncio.sleep(max(10, 240 - (time.time() - start)))
+
+
 # ─── 自動スキャンループ ───────────────────────────────────────────
 @app.on_event("startup")
 async def startup():
@@ -622,6 +653,8 @@ async def startup():
     asyncio.create_task(_auto_scan_loop())
     # ボラティリティ警告は無効化（通知が多すぎるため）
     # asyncio.create_task(_volatility_watch_loop())
+    if _cheat_available:
+        asyncio.create_task(_cheat_signal_loop())
 
 
 async def _auto_scan_loop():
